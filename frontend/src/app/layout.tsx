@@ -9,13 +9,13 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: 'PKA — Personal Knowledge AI Agent',
-  description: '나의 경험, 사고방식, 기술 스택을 학습하고 맥락 기반으로 추론하는 개인 AI 에이전트',
-  keywords: ['AI', 'Knowledge Agent', 'RAG', 'Personal Assistant', 'LLM'],
-  authors: [{ name: 'PKA Team' }],
+  title: '나의 AI — 내 경험과 지식을 아는 AI',
+  description: '내 프로젝트, 경험, 메모를 학습하고 마치 내가 직접 답하듯 추론하는 개인 AI 에이전트. RAG + Groq + Gemini 기반.',
+  keywords: ['AI', '개인 AI', 'RAG', 'Personal Assistant', 'LLM', 'Groq', 'Gemini'],
+  authors: [{ name: '나의 AI' }],
   openGraph: {
-    title: 'PKA — Personal Knowledge AI Agent',
-    description: '경험 기반으로 추론하는 개인 AI 에이전트',
+    title: '나의 AI — 내 경험과 지식을 아는 AI',
+    description: '내 경험 기반으로 추론하는 개인 AI 에이전트',
     type: 'website',
   },
 };
