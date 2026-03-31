@@ -7,9 +7,10 @@ export const config = {
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
 
   llm: {
-    provider: 'google' as const,
-    model: process.env.LLM_MODEL || 'gemini-2.0-flash',
+    provider: (process.env.LLM_PROVIDER || 'groq') as 'google' | 'groq',
+    model: process.env.LLM_MODEL || 'llama-3.3-70b-versatile',
     googleApiKey: process.env.GOOGLE_API_KEY || '',
+    groqApiKey: process.env.GROQ_API_KEY || '',
     embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
   },
 
