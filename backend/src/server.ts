@@ -18,6 +18,7 @@ app.get('/health', (_req, res) => {
     version: '1.0.0',
     persona: config.persona.mode,
     llm: config.llm.model,
+    provider: config.llm.provider,
     timestamp: new Date().toISOString(),
   });
 });

@@ -92,6 +92,7 @@ export default function HomePage() {
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [knowledgeCount, setKnowledgeCount] = useState<number>(0);
   const [expandedSources, setExpandedSources] = useState<Set<string>>(new Set());
+  const [serverInfo, setServerInfo] = useState<{ persona: string; llm: string; provider: string } | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -107,10 +108,21 @@ export default function HomePage() {
 
   const fetchStats = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/memory/stats`);
-      if (res.ok) {
-        const data = await res.json();
+      const [statsRes, healthRes] = await Promise.all([
+        fetch(`${API_URL}/api/memory/stats`),
+        fetch(`${API_URL}/health`),
+      ]);
+      if (statsRes.ok) {
+        const data = await statsRes.json();
         setKnowledgeCount(data.count || 0);
+      }
+      if (healthRes.ok) {
+        const health = await healthRes.json();
+        setServerInfo({
+          persona: health.persona || 'ENFP',
+          llm: health.llm || 'unknown',
+          provider: health.provider || 'unknown',
+        });
       }
     } catch { /* ignore */ }
   };
@@ -427,10 +439,12 @@ export default function HomePage() {
             <div className="persona-dot" />
             <div>
               <div className="persona-text">
-                모드: <span className="persona-mode">ENFP</span>
+                모드: <span className="persona-mode">{serverInfo?.persona ?? 'ENFP'}</span>
               </div>
               <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                Claude claude-3-5-sonnet
+                {serverInfo
+                  ? `${serverInfo.provider.toUpperCase()} · ${serverInfo.llm}`
+                  : '연결 중...'}
               </div>
             </div>
           </div>
