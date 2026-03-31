@@ -34,19 +34,14 @@ class LongTermMemory {
     if (text.length < 200) return text;
 
     try {
-      const Anthropic = (await import('@anthropic-ai/sdk')).default;
-      const client = new Anthropic({ apiKey: config.llm.anthropicApiKey });
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(config.llm.googleApiKey);
+      const model = genAI.getGenerativeModel({ model: config.llm.model });
 
-      const response = await client.messages.create({
-        model: config.llm.model,
-        max_tokens: 512,
-        messages: [{
-          role: 'user',
-          content: `다음 대화를 핵심만 요약하라. 사용자의 질문, AI의 핵심 답변, 중요한 판단 포인트를 포함할 것:\n\n${text}`,
-        }],
-      });
-
-      return response.content[0].type === 'text' ? response.content[0].text : text;
+      const result = await model.generateContent(
+        `다음 대화를 핵심만 요약하라. 사용자의 질문, AI의 핵심 답변, 중요한 판단 포인트를 포함할 것:\n\n${text}`
+      );
+      return result.response.text();
     } catch {
       return text.slice(0, 1000);
     }

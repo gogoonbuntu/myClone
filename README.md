@@ -4,7 +4,7 @@
 
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue?logo=typescript)](https://www.typescriptlang.org/)
 [![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)](https://nextjs.org/)
-[![Claude](https://img.shields.io/badge/LLM-Claude--3.5--Sonnet-orange)](https://anthropic.com/)
+[![Gemini](https://img.shields.io/badge/LLM-Gemini--2.0--Flash-4285F4?logo=google)](https://ai.google.dev/)
 [![ChromaDB](https://img.shields.io/badge/VectorDB-Chroma-green)](https://trychroma.com/)
 
 ---

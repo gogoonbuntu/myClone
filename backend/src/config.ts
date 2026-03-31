@@ -7,10 +7,10 @@ export const config = {
   corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:3000',
 
   llm: {
-    provider: (process.env.LLM_PROVIDER || 'anthropic') as 'anthropic' | 'openai',
-    model: process.env.LLM_MODEL || 'claude-3-5-sonnet-20241022',
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY || '',
-    openaiApiKey: process.env.OPENAI_API_KEY || '',
+    provider: 'google' as const,
+    model: process.env.LLM_MODEL || 'gemini-2.0-flash',
+    googleApiKey: process.env.GOOGLE_API_KEY || '',
+    embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
   },
 
   chroma: {

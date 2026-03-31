@@ -143,7 +143,7 @@ export const vectorStore = new VectorStore();
 
 export async function retrieveContext(
   query: string,
-  topK = config.rag.topK
+  topK: number = config.rag.topK
 ): Promise<RetrievedChunk[]> {
   await vectorStore.init();
   const results = await vectorStore.query(query, topK);
