@@ -125,9 +125,10 @@ export class LLMClient {
     tools: ToolDefinition[],
     onChunk: StreamCallback
   ): Promise<string> {
+    const validMessages = messages.filter(m => m.content && m.content.trim() !== '');
     const groqMessages: Groq.Chat.ChatCompletionMessageParam[] = [
       { role: 'system', content: systemPrompt },
-      ...messages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
+      ...validMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
     ];
 
     const groqTools: Groq.Chat.ChatCompletionTool[] = tools.map(t => ({
@@ -200,10 +201,12 @@ export class LLMClient {
     }));
     const geminiTools: Tool[] = fnDecls.length > 0 ? [{ functionDeclarations: fnDecls }] : [];
 
-    const history = messages.slice(0, -1).map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }));
+    const history = messages.slice(0, -1)
+      .filter(m => m.content && m.content.trim() !== '')
+      .map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }],
+      }));
 
     const chatModel = this.genAI.getGenerativeModel({
       model: this.modelFor('google'),

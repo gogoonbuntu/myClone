@@ -1,5 +1,6 @@
-import { ChromaClient, Collection } from 'chromadb';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
 import { config } from '../config';
 import { llmClient } from '../llm/client';
 import type { Chunk } from './chunker';
@@ -19,121 +20,133 @@ export interface RetrievedChunk {
   };
 }
 
-// ─── Chroma Vector Store ──────────────────────────────────────────────────────
+interface StoredVector {
+  id: string;
+  content: string;
+  embedding: number[];
+  metadata: Record<string, unknown>;
+}
+
+// ─── Cosine Similarity ──────────────────────────────────────────────────────
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0, magA = 0, magB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    magA += a[i] * a[i];
+    magB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+// ─── Local File Vector Store (no Docker needed) ──────────────────────────────
+
+const DATA_DIR = path.join(process.cwd(), 'data');
+const VECTORS_FILE = path.join(DATA_DIR, 'vectors.json');
 
 class VectorStore {
-  private client!: ChromaClient;
-  private collection!: Collection;
+  private vectors: StoredVector[] = [];
   private initialized = false;
 
   async init(): Promise<void> {
     if (this.initialized) return;
 
-    this.client = new ChromaClient({
-      path: `http://${config.chroma.host}:${config.chroma.port}`,
-    });
-
-    try {
-      this.collection = await this.client.getOrCreateCollection({
-        name: config.chroma.collection,
-        metadata: { description: 'PKA personal knowledge base' },
-      });
-      this.initialized = true;
-      console.log(`✅ ChromaDB connected — collection: ${config.chroma.collection}`);
-    } catch (err) {
-      console.warn('⚠️  ChromaDB not available, using mock vector store');
-      this.initialized = false;
+    // Ensure data dir exists
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
     }
+
+    // Load existing vectors from disk
+    if (fs.existsSync(VECTORS_FILE)) {
+      try {
+        const raw = fs.readFileSync(VECTORS_FILE, 'utf-8');
+        this.vectors = JSON.parse(raw);
+        console.log(`✅ Local vector store loaded — ${this.vectors.length} vectors`);
+      } catch {
+        this.vectors = [];
+        console.warn('⚠️  Could not parse vectors file, starting fresh');
+      }
+    } else {
+      this.vectors = [];
+      console.log('📦 Local vector store initialized (empty)');
+    }
+
+    this.initialized = true;
+  }
+
+  private save(): void {
+    fs.writeFileSync(VECTORS_FILE, JSON.stringify(this.vectors), 'utf-8');
   }
 
   async addChunks(chunks: Chunk[]): Promise<void> {
-    if (!this.initialized) {
-      console.log('📝 Mock: would add', chunks.length, 'chunks to vector store');
-      return;
-    }
+    if (!this.initialized) await this.init();
+
+    console.log(`📝 Generating embeddings for ${chunks.length} chunks...`);
 
     const embeddings = await Promise.all(
       chunks.map(c => llmClient.generateEmbedding(c.content))
     );
 
-    const ids = chunks.map(() => uuidv4());
-    const documents = chunks.map(c => c.content);
-    const metadatas = chunks.map(c => ({
-      ...c.metadata,
-      tokenCount: c.tokenCount,
-      chunkIndex: c.index,
-    }));
+    for (let i = 0; i < chunks.length; i++) {
+      this.vectors.push({
+        id: uuidv4(),
+        content: chunks[i].content,
+        embedding: embeddings[i],
+        metadata: {
+          ...chunks[i].metadata,
+          tokenCount: chunks[i].tokenCount,
+          chunkIndex: chunks[i].index,
+        },
+      });
+    }
 
-    // ChromaDB accepts batches
-    await this.collection.add({
-      ids,
-      embeddings,
-      documents,
-      metadatas: metadatas as Record<string, string | number | boolean>[],
-    });
-
-    console.log(`✅ Added ${chunks.length} chunks to vector store`);
+    this.save();
+    console.log(`✅ Added ${chunks.length} chunks → total ${this.vectors.length} vectors`);
   }
 
   async query(queryText: string, topK: number = 5): Promise<RetrievedChunk[]> {
-    if (!this.initialized) {
-      return this.mockQuery(queryText, topK);
-    }
+    if (!this.initialized) await this.init();
+    if (this.vectors.length === 0) return [];
 
-    const queryEmbedding = await llmClient.generateEmbedding(queryText);
+    const queryEmb = await llmClient.generateEmbedding(queryText);
 
-    const results = await this.collection.query({
-      queryEmbeddings: [queryEmbedding],
-      nResults: topK,
-      include: ['documents', 'metadatas', 'distances'] as any,
-    });
+    // Compute similarity for all vectors
+    const scored = this.vectors.map(v => ({
+      ...v,
+      score: cosineSimilarity(queryEmb, v.embedding),
+    }));
 
-    const chunks: RetrievedChunk[] = [];
+    // Sort by score descending, take top K
+    scored.sort((a, b) => b.score - a.score);
+    const top = scored.slice(0, topK);
 
-    if (results.ids[0]) {
-      for (let i = 0; i < results.ids[0].length; i++) {
-        chunks.push({
-          id: results.ids[0][i],
-          content: results.documents?.[0]?.[i] ?? '',
-          score: 1 - (results.distances?.[0]?.[i] ?? 0), // Convert distance to similarity
-          metadata: (results.metadatas?.[0]?.[i] ?? {}) as RetrievedChunk['metadata'],
-        });
-      }
-    }
-
-    return chunks;
+    return top.map(v => ({
+      id: v.id,
+      content: v.content,
+      score: v.score,
+      metadata: v.metadata as RetrievedChunk['metadata'],
+    }));
   }
 
   async deleteBySource(source: string): Promise<void> {
-    if (!this.initialized) return;
-    const results = await this.collection.get({ where: { source } });
-    if (results.ids.length > 0) {
-      await this.collection.delete({ ids: results.ids });
+    if (!this.initialized) await this.init();
+    const before = this.vectors.length;
+    this.vectors = this.vectors.filter(v => v.metadata.source !== source);
+    if (this.vectors.length < before) {
+      this.save();
+      console.log(`🗑️ Deleted ${before - this.vectors.length} vectors for source: ${source}`);
     }
   }
 
   async getStats(): Promise<{ count: number }> {
-    if (!this.initialized) return { count: 0 };
-    const count = await this.collection.count();
-    return { count };
+    if (!this.initialized) await this.init();
+    return { count: this.vectors.length };
   }
 
-  private mockQuery(_queryText: string, topK: number): RetrievedChunk[] {
-    // Return realistic demo results when ChromaDB not available
-    return [
-      {
-        id: 'demo-1',
-        content: 'PKA 프로젝트를 진행하면서 RAG 파이프라인의 청킹 전략이 응답 품질에 결정적인 영향을 미친다는 것을 깨달았습니다. 단순 500 토큰 청킹보다 의미 단위 청킹이 훨씬 효과적이었습니다.',
-        score: 0.92,
-        metadata: { source: 'project-pka', sourceType: 'project', category: 'lessons-learned' },
-      },
-      {
-        id: 'demo-2',
-        content: 'TypeScript와 Node.js를 백엔드로 선택한 이유: 타입 안전성, 풍부한 LLM SDK 지원, 스트리밍 처리의 용이성. Express + SSE 조합이 실시간 응답에 최적이었습니다.',
-        score: 0.87,
-        metadata: { source: 'notes/tech-decisions', sourceType: 'note', category: 'tech-stack' },
-      },
-    ].slice(0, topK);
+  getAllVectors(): StoredVector[] {
+    return this.vectors;
   }
 }
 
@@ -147,7 +160,7 @@ export async function retrieveContext(
 ): Promise<RetrievedChunk[]> {
   await vectorStore.init();
   const results = await vectorStore.query(query, topK);
-  return results.filter(r => r.score > 0.5); // Filter low-relevance
+  return results.filter(r => r.score > 0.3); // Lower threshold for local store
 }
 
 export function formatContext(chunks: RetrievedChunk[]): string {
@@ -160,4 +173,37 @@ export function formatContext(chunks: RetrievedChunk[]): string {
       return `[컨텍스트 ${i + 1}] (출처: ${source}${category}, 관련도: ${(c.score * 100).toFixed(0)}%)\n${c.content}`;
     })
     .join('\n\n---\n\n');
+}
+
+// ─── L1: Keyword Search (for Lab comparison) ─────────────────────────────────
+
+export async function keywordSearch(
+  query: string,
+  topK: number = 5
+): Promise<RetrievedChunk[]> {
+  await vectorStore.init();
+  const vectors = vectorStore.getAllVectors();
+  if (vectors.length === 0) return [];
+
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 1);
+
+  const scored: RetrievedChunk[] = vectors.map(v => {
+    const content = v.content.toLowerCase();
+    let matchCount = 0;
+    for (const word of queryWords) {
+      if (content.includes(word)) matchCount++;
+    }
+    const score = queryWords.length > 0 ? matchCount / queryWords.length : 0;
+    return {
+      id: v.id,
+      content: v.content,
+      score,
+      metadata: v.metadata as RetrievedChunk['metadata'],
+    };
+  });
+
+  return scored
+    .filter(v => v.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
 }

@@ -1,8 +1,10 @@
+// Server v2 - updated routes
 import express from 'express';
 import cors from 'cors';
 import { config } from './config';
 import chatRouter from './api/chat';
 import ingestRouter from './api/ingest';
+import labRouter from './api/lab';
 
 const app = express();
 
@@ -26,6 +28,7 @@ app.get('/health', (_req, res) => {
 // ─── Routes ──────────────────────────────────────────────────────────────────
 app.use('/api', chatRouter);
 app.use('/api', ingestRouter);
+app.use('/api', labRouter);
 
 // ─── Memory routes ───────────────────────────────────────────────────────────
 app.get('/api/memory/stats', async (_req, res) => {

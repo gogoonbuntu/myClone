@@ -23,10 +23,8 @@ class ShortTermMemory {
         lazyConnect: true,
       });
 
-      this.redis.on('error', (err) => {
-        if (!err.message.includes('ECONNREFUSED')) {
-          console.warn('Redis error:', err.message);
-        }
+      this.redis.on('error', () => {
+        // Silently fall back to in-memory Map when Redis unavailable
       });
     }
     return this.redis;

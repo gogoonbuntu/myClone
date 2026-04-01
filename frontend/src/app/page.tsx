@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Link from 'next/link';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -266,6 +267,14 @@ export default function Page() {
             <span className="q-icon">📁</span>
             지식 추가하기
           </button>
+
+          <div className="sidebar-label" style={{marginTop:16}}>개발자 도구</div>
+          <Link href="/lab" style={{textDecoration:'none'}}>
+            <button className="quick-btn" id="sidebar-lab-btn" style={{width:'100%', textAlign:'left'}}>
+              <span className="q-icon">🧪</span>
+              AI 학습 실험실
+            </button>
+          </Link>
         </div>
 
         <div className="sidebar-bottom">
