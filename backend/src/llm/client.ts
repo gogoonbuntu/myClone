@@ -150,6 +150,7 @@ export class LLMClient {
     });
 
     let fullText = '';
+    let hasToolCalls = false;
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
 
@@ -159,6 +160,7 @@ export class LLMClient {
       }
 
       if (delta?.tool_calls) {
+        hasToolCalls = true;
         for (const tc of delta.tool_calls) {
           if (tc.function?.name) {
             let parsedInput: Record<string, unknown> = {};
@@ -173,7 +175,25 @@ export class LLMClient {
       }
     }
 
-    if (!fullText) throw new Error('Groq returned empty response');
+    // If tool_calls were returned, empty text is normal (orchestrator handles tools)
+    if (!fullText && !hasToolCalls) {
+      console.warn('⚠️  Groq returned no text and no tool calls, retrying without tools...');
+      const stream2 = await this.groq.chat.completions.create({
+        model: this.modelFor('groq'),
+        messages: groqMessages,
+        stream: true,
+        max_tokens: 4096,
+        temperature: 0.8,
+      });
+      for await (const chunk of stream2) {
+        const delta = chunk.choices[0]?.delta;
+        if (delta?.content) {
+          fullText += delta.content;
+          onChunk({ type: 'text', content: delta.content, provider: 'groq' });
+        }
+      }
+      if (!fullText) throw new Error('Groq returned empty response after retry');
+    }
     onChunk({ type: 'done', provider: 'groq' });
     return fullText;
   }
@@ -288,6 +308,29 @@ export class LLMClient {
     // Both providers failed
     onChunk({ type: 'error', error: `All providers failed. Last error: ${lastError?.message}` });
     return '';
+  }
+
+  // ── Public: stream with a specific provider (no failover) ───────────────────
+
+  async streamWithProvider(
+    provider: 'groq' | 'google',
+    messages: Message[],
+    systemPrompt: string,
+    onChunk: StreamCallback
+  ): Promise<string> {
+    try {
+      console.log(`⚡ Force ${provider.toUpperCase()}...`);
+      if (provider === 'groq') {
+        return await this.streamGroq(messages, systemPrompt, [], onChunk);
+      } else {
+        return await this.streamGemini(messages, systemPrompt, [], onChunk);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`⚠️  ${provider.toUpperCase()} failed: ${msg}`);
+      onChunk({ type: 'error', error: msg });
+      return '';
+    }
   }
 
   // ── Embeddings: always Google text-embedding-004 (Groq has no embedding API) ─

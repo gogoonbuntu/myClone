@@ -91,11 +91,8 @@ export class AgentOrchestrator {
           onEvent({ type: 'text', content: chunk.content });
         } else if (chunk.type === 'tool_call' && chunk.toolCall) {
           const tc = chunk.toolCall;
-          // Only fire event if we have full input (from finalMessage)
-          if (Object.keys(tc.input).length > 0) {
-            toolCallsInProgress.set(tc.id, tc);
-            onEvent({ type: 'tool_start', toolName: tc.name });
-          }
+          toolCallsInProgress.set(tc.id, tc);
+          onEvent({ type: 'tool_start', toolName: tc.name });
         }
       };
 
