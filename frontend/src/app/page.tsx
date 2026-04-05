@@ -17,6 +17,7 @@ interface Message {
   sources?: Source[]; tools?: ToolEvent[];
   reflection?: Reflection; latency?: string;
   originalText?: string;  // Pre-reflection original answer
+  modelUsed?: string;     // Which AI model generated this response
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -122,7 +123,7 @@ export default function Page() {
         setMessages(p => p.map(m => m.id === aid ? { ...m, reflection: data as unknown as Reflection } : m));
         break;
       case 'done':
-        setMessages(p => p.map(m => m.id === aid ? { ...m, latency: data.latency as string } : m));
+        setMessages(p => p.map(m => m.id === aid ? { ...m, latency: data.latency as string, modelUsed: data.provider as string } : m));
         break;
       case 'error':
         setMessages(p => p.map(m => m.id === aid ? { ...m, content: m.content || `❌ ${data.message}` } : m));
@@ -491,6 +492,9 @@ export default function Page() {
               </div>
               {thinkingMsg.latency && (
                 <div className="think-latency">⏱ 총 소요 시간: {thinkingMsg.latency}</div>
+              )}
+              {thinkingMsg.modelUsed && (
+                <div className="think-latency" style={{marginTop: '4px'}}>🤖 사용 모델: <strong>{thinkingMsg.modelUsed}</strong></div>
               )}
             </div>
 

@@ -73,18 +73,8 @@ export const getProjectsTool = {
 - 교훈: ${p.lessons_learned || '없음'}
       `.trim()).join('\n\n---\n\n');
     } catch {
-      // Fallback to mock data when DB not available
-      return `**PKA (Personal Knowledge AI Agent)** (active, 복잡도: 9/10)
-- 설명: 개인 경험 기반으로 추론하는 AI Agent 시스템
-- 기술 스택: TypeScript, Next.js, ChromaDB, Redis, Claude API
-- 교훈: RAG 파이프라인 품질이 응답 품질의 핵심
-
----
-
-**E-Commerce Platform** (completed, 복잡도: 7/10)
-- 설명: 실시간 재고 관리 풀스택 이커머스
-- 기술 스택: React, Node.js, PostgreSQL, Redis, Stripe
-- 교훈: 캐싱 전략이 성능에 결정적 영향`;
+      // DB not available - return honest message instead of fake data
+      return '프로젝트 데이터베이스에 연결할 수 없습니다. 현재 등록된 프로젝트 정보가 없습니다. 지식 추가 기능으로 프로젝트 정보를 등록해 주세요.';
     }
   },
 };
