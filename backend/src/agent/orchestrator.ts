@@ -16,7 +16,9 @@ export interface AgentInput {
 export interface AgentStreamEvent {
   type:
     | 'status'        // "검색 중...", "툴 실행 중..."
-    | 'text'          // 실제 응답 텍스트
+    | 'text'          // 실제 응답 텍스트 (스트리밍 delta)
+    | 'original_text'  // 원본 텍스트 (Reflection 전)
+    | 'replace_text'  // 기존 텍스트를 교체 (Reflection 개선)
     | 'tool_start'    // 툴 시작
     | 'tool_result'   // 툴 결과
     | 'sources'       // 사용한 RAG 소스
@@ -93,10 +95,15 @@ export class AgentOrchestrator {
           const tc = chunk.toolCall;
           toolCallsInProgress.set(tc.id, tc);
           onEvent({ type: 'tool_start', toolName: tc.name });
+        } else if (chunk.type === 'error') {
+          console.error('LLM error in stream:', chunk.error);
+          onEvent({ type: 'error', content: chunk.error ?? '알 수 없는 LLM 오류' });
         }
       };
 
+      console.log('[ORCH] Step 4: Calling LLM...');
       await llmClient.streamResponse(messages, systemPrompt, TOOL_DEFINITIONS, onChunk);
+      console.log(`[ORCH] Step 4 done: text=${responseText.length}, tools=${toolCallsInProgress.size}`);
 
       // ── Step 5: 툴 실행 (tool calls detected)
       if (toolCallsInProgress.size > 0) {
@@ -143,6 +150,8 @@ export class AgentOrchestrator {
       if (useReflection && responseText.length > 200) {
         onEvent({ type: 'status', content: '답변 검토 중...' });
 
+        const originalText = responseText; // Save original before reflection
+
         const reflection = await llmClient.reflectAndImprove(
           responseText,
           message,
@@ -150,10 +159,16 @@ export class AgentOrchestrator {
         );
 
         if (reflection.improved) {
+          console.log(`[ORCH] Reflection improved! answer type=${typeof reflection.answer}, length=${reflection.answer?.length}`);
           onEvent({ type: 'status', content: '답변 개선 중...' });
-          // Send the improved answer as additional text
-          onEvent({ type: 'text', content: '\n\n---\n*[개선된 답변]*\n\n' + reflection.answer });
-          responseText = reflection.answer;
+          // Send original text for the thinking details panel
+          onEvent({ type: 'original_text', content: originalText });
+          // Replace displayed text with improved version
+          const improvedAnswer = typeof reflection.answer === 'string' && reflection.answer.length > 0
+            ? reflection.answer
+            : originalText; // fallback to original if answer is bad
+          onEvent({ type: 'replace_text', content: improvedAnswer });
+          responseText = improvedAnswer;
         }
 
         onEvent({
@@ -162,6 +177,7 @@ export class AgentOrchestrator {
         });
       }
 
+      console.log('[ORCH] Step 8: Saving memory...');
       // ── Step 8: 메모리 저장
       await shortTermMemory.addTurn(conversationId, {
         role: 'user',
@@ -177,7 +193,9 @@ export class AgentOrchestrator {
       });
 
       const latency = Date.now() - startTime;
+      console.log(`[ORCH] Sending done event (${latency}ms)`);
       onEvent({ type: 'done', content: `완료 (${latency}ms)` });
+      console.log('[ORCH] Done event sent');
 
     } catch (err) {
       const error = err instanceof Error ? err.message : 'Agent error';

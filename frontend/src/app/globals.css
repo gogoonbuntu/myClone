@@ -503,9 +503,203 @@ textarea.field-input { resize: vertical; min-height: 120px; line-height: 1.6; }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .btn-ghost { background: rgba(255,255,255,0.05); border: 1px solid var(--border); color: var(--text-secondary); }
 .btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+/* ─── Thinking Process Modal ─────────────────────────────────────────────── */
+
+/* Trigger button in chat */
+.thinking-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  background: rgba(99,102,241,0.06);
+  border: 1px solid rgba(99,102,241,0.18);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--indigo-400);
+  cursor: pointer;
+  transition: var(--transition);
+  margin-top: 2px;
+}
+.thinking-open-btn:hover {
+  background: rgba(99,102,241,0.14);
+  border-color: rgba(99,102,241,0.35);
+  color: var(--text-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 12px rgba(99,102,241,0.15);
+}
+
+/* Modal overrides for thinking */
+.thinking-modal {
+  width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.think-close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: var(--transition);
+  flex-shrink: 0;
+}
+.think-close-btn:hover {
+  background: rgba(251,113,133,0.1);
+  color: var(--rose-400);
+  border-color: rgba(251,113,133,0.3);
+}
+
+.think-latency {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 3px 10px;
+  background: rgba(52,211,153,0.06);
+  border: 1px solid rgba(52,211,153,0.15);
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  color: var(--emerald-400);
+  font-weight: 500;
+}
+
+.think-modal-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 12px;
+}
+
+.think-section {
+  padding: 14px 0;
+  border-top: 1px solid rgba(255,255,255,0.05);
+}
+.think-section:first-child {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.think-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--indigo-400);
+  margin-bottom: 4px;
+}
+.think-section-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+/* Sources in thinking modal */
+.think-source {
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+  transition: var(--transition);
+}
+.think-source:hover {
+  border-color: rgba(99,102,241,0.2);
+  background: rgba(0,0,0,0.35);
+}
+.think-source-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.think-score {
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(99,102,241,0.15);
+  color: var(--indigo-400);
+  font-size: 10px;
+  font-weight: 600;
+}
+.think-source-content {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.6;
+  max-height: 100px;
+  overflow-y: auto;
+}
+
+/* Tools in thinking modal */
+.think-tool {
+  margin-bottom: 8px;
+}
+.think-tool-name {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--cyan-400);
+  margin-bottom: 6px;
+}
+.think-tool-result {
+  padding: 10px 12px;
+  background: rgba(0,0,0,0.4);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  color: var(--text-secondary);
+  max-height: 200px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: 'JetBrains Mono', monospace;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Original text in thinking modal */
+.think-original {
+  padding: 12px 14px;
+  background: rgba(251,191,36,0.04);
+  border: 1px solid rgba(251,191,36,0.12);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  max-height: 250px;
+  overflow-y: auto;
+}
+.think-original p { margin-bottom: 6px; }
+.think-original p:last-child { margin-bottom: 0; }
+
+/* Reflection critique */
+.think-critique {
+  padding: 10px 12px;
+  background: rgba(139,92,246,0.05);
+  border: 1px solid rgba(139,92,246,0.15);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+.think-verdict {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--emerald-400);
+  padding: 6px 10px;
+  background: rgba(52,211,153,0.05);
+  border: 1px solid rgba(52,211,153,0.12);
+  border-radius: var(--radius-sm);
+}
 
 @media (max-width: 768px) {
   .sidebar { display: none; }
   .chips { grid-template-columns: 1fr; }
   .msg-body { max-width: 92%; }
+  .thinking-modal { width: 95vw; }
 }

@@ -73,8 +73,24 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE },
 ];
 
-// ─── Provider order: Groq first, Gemini as failover ───────────────────────────
-// Failover triggers when a provider throws an error or returns empty content.
+// ─── Groq multi-model failover ────────────────────────────────────────────────
+// Each Groq model has its own separate rate limit (TPD/RPM).
+// We try multiple models before falling back to Gemini.
+
+const GROQ_MODELS = [
+  'llama-3.3-70b-versatile',             // Primary: Llama 3.3 70B
+  'openai/gpt-oss-120b',                 // GPT OSS 120B: largest model
+  'moonshotai/kimi-k2-instruct',         // Kimi K2: high quality
+  'meta-llama/llama-4-scout-17b-16e-instruct', // Llama 4 Scout
+  'qwen/qwen3-32b',                      // Qwen 3 32B
+  'openai/gpt-oss-20b',                  // GPT OSS 20B
+  'llama-3.1-8b-instant',                // Fast & small fallback
+];
+
+const GEMINI_MODELS = [
+  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+];
 
 export class LLMClient {
   private genAI: GoogleGenerativeAI;
@@ -84,6 +100,7 @@ export class LLMClient {
 
   // Per-request active provider tracking (for logging)
   private lastUsedProvider: string = 'groq';
+  private lastUsedModel: string = '';
 
   constructor() {
     this.genAI   = new GoogleGenerativeAI(config.llm.googleApiKey);
@@ -91,21 +108,11 @@ export class LLMClient {
     this.primaryProvider = config.llm.provider;
     this.personaMode     = config.persona.mode;
 
-    console.log(`🤖 LLM: primary=${this.primaryProvider.toUpperCase()}, failover=${this.primaryProvider === 'groq' ? 'GEMINI' : 'GROQ'}`);
+    console.log(`🤖 LLM: primary=${this.primaryProvider.toUpperCase()}, Groq models: ${GROQ_MODELS.length}, Gemini models: ${GEMINI_MODELS.length}`);
   }
 
-  // ── Provider ordering ────────────────────────────────────────────────────────
-
-  private getProviderOrder(): Array<'groq' | 'google'> {
-    return this.primaryProvider === 'groq'
-      ? ['groq', 'google']
-      : ['google', 'groq'];
-  }
-
-  private modelFor(provider: 'groq' | 'google'): string {
-    if (provider === 'groq')   return config.llm.provider === 'groq'   ? config.llm.model : 'llama-3.3-70b-versatile';
-    if (provider === 'google') return config.llm.provider === 'google' ? config.llm.model : 'gemini-2.0-flash';
-    return config.llm.model;
+  private geminiModel(): string {
+    return config.llm.provider === 'google' ? config.llm.model : 'gemini-2.0-flash';
   }
 
   // ── System prompt builder ────────────────────────────────────────────────────
@@ -117,31 +124,57 @@ export class LLMClient {
     return `${persona}${ctx}${tool}`;
   }
 
+  // ── Timeout helper ─────────────────────────────────────────────────────────────
+
+  private withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      promise.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
+    });
+  }
+
   // ── Groq streaming ────────────────────────────────────────────────────────────
+
+  private buildGroqMessages(messages: Message[], systemPrompt: string) {
+    const validMessages = messages.filter(m => {
+      const raw: unknown = m.content;
+      const c = typeof raw === 'string' ? raw : String(raw ?? '');
+      return c.trim() !== '';
+    });
+    const groqMessages: Groq.Chat.ChatCompletionMessageParam[] = [
+      { role: 'system', content: systemPrompt },
+      ...validMessages.map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: typeof m.content === 'string' ? m.content : String(m.content ?? ''),
+      })),
+    ];
+    return { validMessages, groqMessages };
+  }
 
   private async streamGroq(
     messages: Message[],
     systemPrompt: string,
     tools: ToolDefinition[],
-    onChunk: StreamCallback
+    onChunk: StreamCallback,
+    modelOverride?: string
   ): Promise<string> {
-    const validMessages = messages.filter(m => m.content && m.content.trim() !== '');
-    const groqMessages: Groq.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: systemPrompt },
-      ...validMessages.map(m => ({ role: m.role as 'user' | 'assistant', content: m.content })),
-    ];
+    const { validMessages, groqMessages } = this.buildGroqMessages(messages, systemPrompt);
 
-    const groqTools: Groq.Chat.ChatCompletionTool[] = tools.map(t => ({
+    const useTools = tools.length > 0;
+    const groqTools: Groq.Chat.ChatCompletionTool[] = useTools ? tools.map(t => ({
       type: 'function' as const,
       function: {
         name: t.name,
         description: t.description,
         parameters: { type: 'object', properties: t.input_schema.properties, required: t.input_schema.required },
       },
-    }));
+    })) : [];
 
-    const stream = await this.groq.chat.completions.create({
-      model: this.modelFor('groq'),
+    const model = modelOverride || GROQ_MODELS[0];
+    console.log(`  → Groq [${model}]: ${validMessages.length} messages, ${groqTools.length} tools`);
+
+    const streamPromise = this.groq.chat.completions.create({
+      model,
       messages: groqMessages,
       stream: true,
       max_tokens: 4096,
@@ -149,9 +182,15 @@ export class LLMClient {
       ...(groqTools.length > 0 ? { tools: groqTools, tool_choice: 'auto' } : {}),
     });
 
+    // Add 30s timeout to the initial connection
+    const stream = await this.withTimeout(streamPromise, 30000, 'Groq stream creation');
+
     let fullText = '';
     let hasToolCalls = false;
+    let lastChunkTime = Date.now();
+
     for await (const chunk of stream) {
+      lastChunkTime = Date.now();
       const delta = chunk.choices[0]?.delta;
 
       if (delta?.content) {
@@ -175,16 +214,19 @@ export class LLMClient {
       }
     }
 
+    console.log(`  → Groq result: text=${fullText.length}chars, toolCalls=${hasToolCalls}`);
+
     // If tool_calls were returned, empty text is normal (orchestrator handles tools)
     if (!fullText && !hasToolCalls) {
       console.warn('⚠️  Groq returned no text and no tool calls, retrying without tools...');
-      const stream2 = await this.groq.chat.completions.create({
-        model: this.modelFor('groq'),
+      const stream2Promise = this.groq.chat.completions.create({
+        model,
         messages: groqMessages,
         stream: true,
         max_tokens: 4096,
         temperature: 0.8,
       });
+      const stream2 = await this.withTimeout(stream2Promise, 30000, 'Groq retry');
       for await (const chunk of stream2) {
         const delta = chunk.choices[0]?.delta;
         if (delta?.content) {
@@ -204,7 +246,8 @@ export class LLMClient {
     messages: Message[],
     systemPrompt: string,
     tools: ToolDefinition[],
-    onChunk: StreamCallback
+    onChunk: StreamCallback,
+    modelOverride?: string
   ): Promise<string> {
     const fnDecls: FunctionDeclaration[] = tools.map(t => ({
       name: t.name,
@@ -222,14 +265,18 @@ export class LLMClient {
     const geminiTools: Tool[] = fnDecls.length > 0 ? [{ functionDeclarations: fnDecls }] : [];
 
     const history = messages.slice(0, -1)
-      .filter(m => m.content && m.content.trim() !== '')
+      .filter(m => {
+        const c = typeof m.content === 'string' ? m.content : String(m.content || '');
+        return c.trim() !== '';
+      })
       .map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: m.content }],
+        parts: [{ text: typeof m.content === 'string' ? m.content : String(m.content ?? '') }],
       }));
 
+    const gemModel = modelOverride || this.geminiModel();
     const chatModel = this.genAI.getGenerativeModel({
-      model: this.modelFor('google'),
+      model: gemModel,
       systemInstruction: systemPrompt,
       safetySettings: SAFETY_SETTINGS,
       generationConfig: { maxOutputTokens: 4096, temperature: 0.7 },
@@ -268,7 +315,8 @@ export class LLMClient {
     return fullText;
   }
 
-  // ── Public: streamResponse with automatic failover ───────────────────────────
+  // ── Public: streamResponse with multi-model failover ──────────────────────────
+  // Tries each Groq model (each has separate quota), then Gemini models
 
   async streamResponse(
     messages: Message[],
@@ -276,37 +324,50 @@ export class LLMClient {
     tools: ToolDefinition[],
     onChunk: StreamCallback
   ): Promise<string> {
-    const providers = this.getProviderOrder();
     let lastError: Error | null = null;
 
-    for (const provider of providers) {
+    // Phase 1: Try all Groq models
+    for (const model of GROQ_MODELS) {
       try {
-        console.log(`⚡ Trying ${provider.toUpperCase()}...`);
-        let result: string;
-
-        if (provider === 'groq') {
-          result = await this.streamGroq(messages, systemPrompt, tools, onChunk);
-        } else {
-          result = await this.streamGemini(messages, systemPrompt, tools, onChunk);
-        }
-
-        this.lastUsedProvider = provider;
+        console.log(`⚡ Trying GROQ [${model}]...`);
+        const result = await this.streamGroq(messages, systemPrompt, tools, onChunk, model);
+        this.lastUsedProvider = 'groq';
+        this.lastUsedModel = model;
+        console.log(`✅ GROQ [${model}] succeeded (${result.length} chars)`);
         return result;
-
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
-        const next = providers[providers.indexOf(provider) + 1];
-        console.warn(`⚠️  ${provider.toUpperCase()} failed: ${lastError.message}${next ? ` → Failing over to ${next.toUpperCase()}` : ''}`);
-
-        // Notify frontend that we're failing over
-        if (next) {
-          onChunk({ type: 'text', content: '', provider });  // flush
-        }
+        const shortErr = lastError.message.slice(0, 120);
+        console.warn(`⚠️  GROQ [${model}] failed: ${shortErr}`);
       }
     }
 
-    // Both providers failed
-    onChunk({ type: 'error', error: `All providers failed. Last error: ${lastError?.message}` });
+    // Phase 2: Try Gemini models
+    for (const model of GEMINI_MODELS) {
+      try {
+        console.log(`⚡ Trying GEMINI [${model}]...`);
+        const result = await this.streamGemini(messages, systemPrompt, tools, onChunk, model);
+        this.lastUsedProvider = 'google';
+        this.lastUsedModel = model;
+        console.log(`✅ GEMINI [${model}] succeeded (${result.length} chars)`);
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        const shortErr = lastError.message.slice(0, 120);
+        console.warn(`⚠️  GEMINI [${model}] failed: ${shortErr}`);
+      }
+    }
+
+    // All models failed
+    let errorMsg: string;
+    const rawMsg = lastError?.message || '';
+    if (rawMsg.includes('429') || rawMsg.includes('rate_limit') || rawMsg.includes('quota')) {
+      errorMsg = `⏳ 모든 AI 모델의 사용량 한도에 도달했습니다 (Groq ${GROQ_MODELS.length}개 + Gemini ${GEMINI_MODELS.length}개). 잠시 후 다시 시도해 주세요.`;
+    } else {
+      errorMsg = `AI 응답 생성에 실패했습니다: ${rawMsg.slice(0, 200)}`;
+    }
+    console.error(`❌ ${errorMsg}`);
+    onChunk({ type: 'error', error: errorMsg });
     return '';
   }
 
@@ -338,14 +399,20 @@ export class LLMClient {
   async generateEmbedding(text: string): Promise<number[]> {
     try {
       const model  = this.genAI.getGenerativeModel({ model: config.llm.embeddingModel });
-      const result = await model.embedContent(text);
+      const result = await this.withTimeout(
+        model.embedContent(text),
+        10000,
+        'Embedding generation'
+      );
       return result.embedding.values;
-    } catch {
+    } catch (err) {
+      console.warn(`⚠️  Embedding failed (using pseudo): ${err instanceof Error ? err.message : err}`);
       return this.pseudoEmbedding(text);
     }
   }
 
   private pseudoEmbedding(text: string): number[] {
+    // Deterministic pseudo-embedding based on character codes
     const norm = text.toLowerCase().trim();
     const vec  = new Array(768).fill(0);
     for (let i = 0; i < norm.length; i++) vec[i % 768] += norm.charCodeAt(i) / 255;
@@ -369,44 +436,59 @@ export class LLMClient {
 다음 JSON으로만 응답:
 {"improve_needed": false, "critique": "...", "improved_answer": "..."}`;
 
-    const providers = this.getProviderOrder();
-
-    for (const provider of providers) {
+    // Try all Groq models first
+    for (const model of GROQ_MODELS) {
       try {
-        let text = '';
-
-        if (provider === 'groq') {
-          const res = await this.groq.chat.completions.create({
-            model: this.modelFor('groq'),
-            messages: [{ role: 'user', content: prompt }],
-            max_tokens: 2048,
-            response_format: { type: 'json_object' },
-          });
-          text = res.choices[0]?.message?.content ?? '{}';
-        } else {
-          const model = this.genAI.getGenerativeModel({
-            model: this.modelFor('google'),
-            generationConfig: { maxOutputTokens: 2048, responseMimeType: 'application/json' },
-            safetySettings: SAFETY_SETTINGS,
-          });
-          text = (await model.generateContent(prompt)).response.text();
-        }
-
+        const res = await this.groq.chat.completions.create({
+          model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 2048,
+          response_format: { type: 'json_object' },
+        });
+        const text = res.choices[0]?.message?.content ?? '{}';
         const parsed = JSON.parse(text);
+        const isImproved = !!parsed.improve_needed;
+        console.log(`✅ Reflection via GROQ [${model}]`);
         return {
-          improved: parsed.improve_needed,
-          answer:   parsed.improve_needed ? parsed.improved_answer : originalAnswer,
+          improved: isImproved,
+          answer:   isImproved && parsed.improved_answer
+            ? (typeof parsed.improved_answer === 'string' ? parsed.improved_answer : JSON.stringify(parsed.improved_answer))
+            : originalAnswer,
           critique: parsed.critique ?? '',
         };
       } catch (err) {
-        console.warn(`⚠️  Reflection ${provider} failed: ${err instanceof Error ? err.message : err}`);
+        console.warn(`⚠️  Reflection GROQ [${model}] failed: ${(err instanceof Error ? err.message : err + '').slice(0, 80)}`);
+      }
+    }
+
+    // Then try Gemini models
+    for (const gemModel of GEMINI_MODELS) {
+      try {
+        const model = this.genAI.getGenerativeModel({
+          model: gemModel,
+          generationConfig: { maxOutputTokens: 2048, responseMimeType: 'application/json' },
+          safetySettings: SAFETY_SETTINGS,
+        });
+        const text = (await model.generateContent(prompt)).response.text();
+        const parsed = JSON.parse(text);
+        const isImproved = !!parsed.improve_needed;
+        console.log(`✅ Reflection via GEMINI [${gemModel}]`);
+        return {
+          improved: isImproved,
+          answer:   isImproved && parsed.improved_answer
+            ? (typeof parsed.improved_answer === 'string' ? parsed.improved_answer : JSON.stringify(parsed.improved_answer))
+            : originalAnswer,
+          critique: parsed.critique ?? '',
+        };
+      } catch (err) {
+        console.warn(`⚠️  Reflection GEMINI [${gemModel}] failed: ${(err instanceof Error ? err.message : err + '').slice(0, 80)}`);
       }
     }
 
     return { improved: false, answer: originalAnswer, critique: '' };
   }
 
-  getLastUsedProvider(): string { return this.lastUsedProvider; }
+  getLastUsedProvider(): string { return `${this.lastUsedProvider}/${this.lastUsedModel}`; }
 }
 
 export const llmClient = new LLMClient();

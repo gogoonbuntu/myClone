@@ -16,6 +16,7 @@ interface Message {
   id: string; role: Role; content: string; timestamp: Date;
   sources?: Source[]; tools?: ToolEvent[];
   reflection?: Reflection; latency?: string;
+  originalText?: string;  // Pre-reflection original answer
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -30,6 +31,7 @@ const SUGGESTIONS = [
 // ─── Simple Markdown renderer ─────────────────────────────────────────────────
 
 function md(text: string): string {
+  if (!text || typeof text !== 'string') return '';
   return text
     .replace(/```([\w]*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>')
     .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -57,6 +59,7 @@ export default function Page() {
   const [vecCount, setVecCount]           = useState(0);
   const [expanded, setExpanded]           = useState<Set<string>>(new Set());
   const [serverInfo, setServerInfo]       = useState<{persona:string;llm:string;provider:string}|null>(null);
+  const [thinkingMsg, setThinkingMsg]     = useState<Message|null>(null);
 
   // Upload state
   const [isDragging, setIsDragging]       = useState(false);
@@ -98,6 +101,12 @@ export default function Page() {
       case 'text':
         setMessages(p => p.map(m => m.id === aid ? { ...m, content: m.content + (data.delta as string) } : m));
         break;
+      case 'original_text':
+        setMessages(p => p.map(m => m.id === aid ? { ...m, originalText: data.content as string } : m));
+        break;
+      case 'replace_text':
+        setMessages(p => p.map(m => m.id === aid ? { ...m, content: data.content as string } : m));
+        break;
       case 'tool_start':
         setStatus(`🔧 ${data.tool} 실행 중...`);
         break;
@@ -116,7 +125,7 @@ export default function Page() {
         setMessages(p => p.map(m => m.id === aid ? { ...m, latency: data.latency as string } : m));
         break;
       case 'error':
-        setMessages(p => p.map(m => m.id === aid ? { ...m, content: `❌ ${data.message}` } : m));
+        setMessages(p => p.map(m => m.id === aid ? { ...m, content: m.content || `❌ ${data.message}` } : m));
         break;
     }
   }, []);
@@ -135,7 +144,7 @@ export default function Page() {
     const aMsg: Message = { id: aid, role: 'assistant', content: '', timestamp: new Date(), sources: [], tools: [] };
 
     setMessages(p => [...p, userMsg, aMsg]);
-    setLoading(true); setStatus(null);
+    setLoading(true); setStatus('응답 생성 중...');
 
     try {
       const res = await fetch(`${API_URL}/api/chat`, {
@@ -143,32 +152,65 @@ export default function Page() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: t, conversationId: convId, useReflection: true }),
       });
-      if (!res.ok || !res.body) throw new Error(`API ${res.status}`);
+      if (!res.ok) throw new Error(`API ${res.status}`);
 
-      const reader  = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = '', curEvent = '';
+      const body = await res.text();
+      const lines = body.trim().split('\n');
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() ?? '';
+      // Parse all NDJSON events
+      const events: Array<{ event: string; data: Record<string,unknown> }> = [];
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { events.push(JSON.parse(line)); } catch { /**/ }
+      }
 
-        for (const line of lines) {
-          if (line.startsWith('event: ')) { curEvent = line.slice(7).trim(); }
-          else if (line.startsWith('data: ')) {
-            try {
-              const data = JSON.parse(line.slice(6));
-              handleEvent(curEvent, data, aid);
-            } catch { /**/ }
+      console.log('[CHAT] Parsed events:', events.map(e => e.event));
+
+      // Separate text deltas (for typewriter) from other events (instant)
+      let fullText = '';
+      let replacementText: string | null = null;
+
+      for (const { event, data } of events) {
+        if (event === 'text') {
+          fullText += (data.delta as string) || '';
+        } else if (event === 'replace_text') {
+          // Only accept non-empty string replacements
+          const rt = data.content;
+          if (typeof rt === 'string' && rt.length > 0) {
+            replacementText = rt;
           }
+        } else if (event === 'original_text') {
+          // Store original text directly - don't go through handleEvent
+          const ot = data.content;
+          if (typeof ot === 'string' && ot.length > 0) {
+            setMessages(p => p.map(m => m.id === aid ? { ...m, originalText: ot } : m));
+          }
+        } else {
+          // Apply non-text events immediately
+          handleEvent(event, data, aid);
         }
       }
+
+      console.log('[CHAT] fullText length:', fullText.length, '| replacementText:', replacementText ? replacementText.length : 'null');
+
+      // Typewriter animation for the text
+      const textToType = (replacementText && replacementText.length > 0) ? replacementText : fullText;
+      if (textToType && textToType.length > 0) {
+        const CHARS_PER_TICK = 3;
+        const TICK_MS = 10;
+
+        for (let i = 0; i < textToType.length; i += CHARS_PER_TICK) {
+          const chunk = textToType.slice(0, i + CHARS_PER_TICK);
+          setMessages(p => p.map(m => m.id === aid ? { ...m, content: chunk } : m));
+          await new Promise(r => setTimeout(r, TICK_MS));
+        }
+        // Ensure final text is set completely
+        setMessages(p => p.map(m => m.id === aid ? { ...m, content: textToType } : m));
+      }
+
     } catch (err) {
       setMessages(p => p.map(m => m.id === aid
-        ? { ...m, content: `❌ 연결 오류: ${err instanceof Error ? err.message : '알 수 없는 오류'}` }
+        ? { ...m, content: m.content || `❌ 연결 오류: ${err instanceof Error ? err.message : '알 수 없는 오류'}` }
         : m
       ));
     } finally {
@@ -349,41 +391,23 @@ export default function Page() {
                       />
                     )}
 
-                    {/* Sources */}
-                    {msg.sources && msg.sources.length > 0 && (
-                      <div className="sources-panel">
-                        <div className="sources-toggle" onClick={() => toggleExpanded(msg.id)}>
-                          📚 {msg.sources.length}개 지식 참조됨 {expanded.has(msg.id) ? '▲' : '▼'}
-                        </div>
-                        {expanded.has(msg.id) && (
-                          <div style={{marginTop:6}}>
-                            {msg.sources.map(s => (
-                              <span key={s.id} className="source-tag" title={s.content}>
-                                📄 {s.source}{s.category ? ` / ${s.category}` : ''} ({(s.score*100).toFixed(0)}%)
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* Tools */}
-                    {msg.tools && msg.tools.length > 0 && (
-                      <div style={{display:'flex',flexDirection:'column',gap:5}}>
-                        {msg.tools.map((t, i) => (
-                          <div key={i}>
-                            <div className="tool-badge">🔧 {t.name}</div>
-                            {t.result && <div className="tool-result">{t.result}</div>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Reflection */}
+                    {/* Reflection badge (improved indicator) */}
                     {msg.reflection && (
                       <div className="reflect-badge">
                         {msg.reflection.improved ? '✨ 답변 개선됨' : '✅ 답변 검토 완료'}
                       </div>
+                    )}
+
+                    {/* 사고 과정 상세 버튼 */}
+                    {msg.role === 'assistant' && msg.latency && (
+                      (msg.sources?.length || msg.tools?.length || msg.reflection || msg.originalText) ? (
+                        <button
+                          className="thinking-open-btn"
+                          onClick={() => setThinkingMsg(msg)}
+                        >
+                          💡 사고 과정 상세
+                        </button>
+                      ) : null
                     )}
 
                     <div className="msg-time">
@@ -452,6 +476,94 @@ export default function Page() {
           </div>
         </div>
       </div>
+
+      {/* ─── Thinking Process Modal ─── */}
+      {thinkingMsg && (
+        <div className="backdrop" onClick={e => { if (e.target === e.currentTarget) setThinkingMsg(null); }}>
+          <div className="modal thinking-modal" id="thinking-modal">
+            <div className="modal-header">
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                <div className="modal-title">💡 AI 사고 과정 상세</div>
+                <button className="think-close-btn" onClick={() => setThinkingMsg(null)}>✕</button>
+              </div>
+              <div className="modal-desc">
+                이 답변을 생성하기 위해 AI가 수행한 모든 단계를 확인할 수 있습니다.
+              </div>
+              {thinkingMsg.latency && (
+                <div className="think-latency">⏱ 총 소요 시간: {thinkingMsg.latency}</div>
+              )}
+            </div>
+
+            <div className="think-modal-body">
+              {/* Step 1: Tool executions */}
+              {thinkingMsg.tools && thinkingMsg.tools.length > 0 && (
+                <div className="think-section">
+                  <div className="think-section-title">🔧 도구 실행 ({thinkingMsg.tools.length}개)</div>
+                  <div className="think-section-desc">질문에 답하기 위해 다음 도구를 호출했습니다.</div>
+                  {thinkingMsg.tools.map((t, i) => (
+                    <div key={i} className="think-tool">
+                      <div className="think-tool-name">🛠️ {t.name}</div>
+                      {t.result && <pre className="think-tool-result">{t.result}</pre>}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Step 2: Referenced sources */}
+              {thinkingMsg.sources && thinkingMsg.sources.length > 0 && (
+                <div className="think-section">
+                  <div className="think-section-title">📚 참조한 지식 ({thinkingMsg.sources.length}개)</div>
+                  <div className="think-section-desc">벡터 검색으로 찾은 관련 지식입니다.</div>
+                  {thinkingMsg.sources.map(s => (
+                    <div key={s.id} className="think-source">
+                      <div className="think-source-header">
+                        <span>📄 {s.source}{s.category ? ` / ${s.category}` : ''}</span>
+                        <span className="think-score">{(s.score*100).toFixed(0)}% 관련</span>
+                      </div>
+                      <div className="think-source-content">{s.content}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Step 3: Original draft */}
+              {thinkingMsg.originalText && (
+                <div className="think-section">
+                  <div className="think-section-title">📝 최초 생성 초안</div>
+                  <div className="think-section-desc">Reflection 이전에 LLM이 생성한 원본 답변입니다.</div>
+                  <div className="think-original" dangerouslySetInnerHTML={{ __html: `<p>${md(thinkingMsg.originalText)}</p>` }} />
+                </div>
+              )}
+
+              {/* Step 4: Reflection critique */}
+              {thinkingMsg.reflection && (
+                <div className="think-section">
+                  <div className="think-section-title">🪞 자기 비판 (Reflection)</div>
+                  <div className="think-section-desc">AI가 초안을 스스로 비판하고 개선 여부를 판단한 과정입니다.</div>
+                  <div className="think-critique">{thinkingMsg.reflection.critique}</div>
+                  <div className="think-verdict">
+                    {thinkingMsg.reflection.improved
+                      ? '✅ 비판 결과: 초안의 부족한 점을 발견하여 답변을 개선했습니다.'
+                      : '✅ 비판 결과: 개선이 필요하지 않아 원본을 유지했습니다.'}
+                  </div>
+                </div>
+              )}
+
+              {/* No details available */}
+              {!thinkingMsg.tools?.length && !thinkingMsg.sources?.length && !thinkingMsg.originalText && !thinkingMsg.reflection && (
+                <div className="think-section">
+                  <div className="think-section-title">📋 사고 과정 요약</div>
+                  <div className="think-section-desc">이 답변은 별도의 도구 호출이나 지식 검색 없이 생성되었습니다.</div>
+                </div>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button className="btn btn-ghost" onClick={() => setThinkingMsg(null)}>닫기</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ─── Upload Modal ─── */}
       {showModal && (
