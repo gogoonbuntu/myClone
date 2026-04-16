@@ -407,22 +407,37 @@ export class LLMClient {
     }
   }
 
-  // ── Embeddings: always Google text-embedding-004 (Groq has no embedding API) ─
+  // ── Embeddings: Google text-embedding-004 via REST v1 (SDK uses v1beta which 404s) ─
 
   async generateEmbedding(text: string): Promise<number[]> {
+    const apiKey = config.llm.googleApiKey;
+    const model  = 'gemini-embedding-001'; // confirmed available for this key
+    const url    = `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent?key=${apiKey}`;
+
     try {
-      const model  = this.genAI.getGenerativeModel({ model: config.llm.embeddingModel });
-      const result = await this.withTimeout(
-        model.embedContent(text),
-        10000,
-        'Embedding generation'
-      );
-      return result.embedding.values;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: `models/${model}`,
+          content: { parts: [{ text }] },
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+
+      if (!res.ok) {
+        const err = await res.text();
+        throw new Error(`[${res.status}] ${err.slice(0, 200)}`);
+      }
+
+      const json = await res.json() as { embedding: { values: number[] } };
+      return json.embedding.values;
     } catch (err) {
       console.warn(`⚠️  Embedding failed (using pseudo): ${err instanceof Error ? err.message : err}`);
       return this.pseudoEmbedding(text);
     }
   }
+
 
   private pseudoEmbedding(text: string): number[] {
     // Deterministic pseudo-embedding based on character codes
