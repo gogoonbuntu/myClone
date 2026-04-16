@@ -11,13 +11,18 @@ interface Source { id: string; content: string; score: number; source: string; c
 interface ToolEvent { name: string; result?: string; }
 interface Reflection { improved: boolean; critique: string; }
 interface AnalysisStep { step: number; label: string; detail: string; }
+interface ProcessTraceStep {
+  id: string; label: string; detail: string; durationMs?: number;
+  data?: Record<string, unknown>;
+}
 
 interface Message {
   id: string; role: Role; content: string; timestamp: Date;
   sources?: Source[]; tools?: ToolEvent[];
   reflection?: Reflection; latency?: string;
-  originalText?: string;  // Pre-reflection original answer
-  modelUsed?: string;     // Which AI model generated this response
+  originalText?: string;
+  modelUsed?: string;
+  processTrace?: ProcessTraceStep[];
 }
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
@@ -45,6 +50,150 @@ function md(text: string): string {
     .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
     .replace(/(<li>[^<]*<\/li>[\n]?)+/g, '<ul>$&</ul>')
     .replace(/\n\n+/g, '</p><p>');
+}
+
+// ─── Process Sequence Panel ───────────────────────────────────────────────────
+
+const STEP_ICONS: Record<string, string> = {
+  tokenize: '✂️', embed: '🔢', memory: '💾', rag_search: '🔍',
+  prompt_build: '📝', llm_inference: '⚡', reflection: '🪞', output: '✅',
+};
+const STEP_COLORS: Record<string, string> = {
+  tokenize: '#818cf8', embed: '#a78bfa', memory: '#22d3ee',
+  rag_search: '#34d399', prompt_build: '#fbbf24', llm_inference: '#6366f1',
+  reflection: '#f472b6', output: '#34d399',
+};
+
+function ProcessSequencePanel({ steps, msgId }: { steps: ProcessTraceStep[]; msgId: string }) {
+  const [open, setOpen] = useState(false);
+  const [expandedStep, setExpandedStep] = useState<string | null>(null);
+
+  const totalMs = steps[steps.length - 1]?.durationMs ?? 0;
+
+  return (
+    <div className="psp-wrap">
+      <button className="psp-toggle" onClick={() => setOpen(o => !o)} id={`psp-${msgId}`}>
+        <span className="psp-toggle-icon">⚙️</span>
+        처리 시퀀스 ({steps.length}단계)
+        <span className="psp-total-ms">{totalMs}ms</span>
+        <span className="psp-caret">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="psp-body">
+          {/* Timeline bar */}
+          <div className="psp-timeline-bar">
+            {steps.map((s) => {
+              const pct = totalMs > 0 ? Math.max(2, Math.round(((s.durationMs ?? 0) / totalMs) * 100)) : Math.round(100 / steps.length);
+              return (
+                <div
+                  key={s.id}
+                  className="psp-bar-seg"
+                  style={{ width: `${pct}%`, background: STEP_COLORS[s.id] ?? '#6366f1' }}
+                  title={`${s.label}: ${s.durationMs ?? 0}ms`}
+                />
+              );
+            })}
+          </div>
+
+          {/* Steps list */}
+          <div className="psp-steps">
+            {steps.map((s, i) => {
+              const color = STEP_COLORS[s.id] ?? '#6366f1';
+              const icon = STEP_ICONS[s.id] ?? '🔹';
+              const isExpanded = expandedStep === s.id;
+              const arch = s.id === 'llm_inference' ? (s.data?.architecture as Record<string, unknown> | undefined) : null;
+              const ragChunks = s.id === 'rag_search' ? (s.data?.chunks as Array<{source:string;score:number;category:string|null;preview:string}> | undefined) : null;
+              const procNotes = s.id === 'llm_inference' ? (s.data?.processingNote as string[] | undefined) : null;
+
+              return (
+                <div key={s.id} className="psp-step">
+                  {/* connector line */}
+                  {i < steps.length - 1 && <div className="psp-connector" style={{ borderColor: color }} />}
+
+                  <div className="psp-step-header" onClick={() => setExpandedStep(isExpanded ? null : s.id)}>
+                    <div className="psp-step-dot" style={{ background: color, boxShadow: `0 0 8px ${color}66` }}>
+                      <span>{icon}</span>
+                    </div>
+                    <div className="psp-step-info">
+                      <div className="psp-step-label" style={{ color }}>
+                        <span className="psp-step-num">{i + 1}</span>
+                        {s.label}
+                      </div>
+                      <div className="psp-step-detail">{s.detail}</div>
+                    </div>
+                    <div className="psp-step-ms">{s.durationMs != null ? `${s.durationMs}ms` : '—'}</div>
+                  </div>
+
+                  {/* Expanded detail */}
+                  {isExpanded && (
+                    <div className="psp-step-expanded">
+                      {/* LLM Architecture detail */}
+                      {arch && (
+                        <div className="psp-arch-grid">
+                          <div className="psp-arch-item"><span>파라미터</span><strong>{String(arch.params ?? '?')}</strong></div>
+                          <div className="psp-arch-item"><span>레이어</span><strong>{String(arch.layers ?? '?')}</strong></div>
+                          <div className="psp-arch-item"><span>Q헤드</span><strong>{String(arch.qHeads ?? '?')}</strong></div>
+                          <div className="psp-arch-item"><span>KV헤드</span><strong>{String(arch.kvHeads ?? '?')}</strong></div>
+                          <div className="psp-arch-item"><span>히든 차원</span><strong>{String(arch.hiddenDim ?? '?')}</strong></div>
+                          <div className="psp-arch-item"><span>출력 토큰/s</span><strong>{String(s.data?.tokensPerSec ?? '?')}</strong></div>
+                        </div>
+                      )}
+                      {arch && <div className="psp-arch-note">{String(arch.note ?? '')}</div>}
+                      {procNotes && (
+                        <div className="psp-layer-notes">
+                          {procNotes.map((n, ni) => (
+                            <div key={ni} className="psp-layer-note">
+                              <span className="psp-layer-dot" style={{ background: color }} />
+                              {n}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {arch && s.data?.attentionNote && (
+                        <div className="psp-attention-note">{String(s.data.attentionNote)}</div>
+                      )}
+
+                      {/* RAG chunks */}
+                      {ragChunks && ragChunks.length > 0 && (
+                        <div className="psp-rag-chunks">
+                          {ragChunks.map((c, ci) => (
+                            <div key={ci} className="psp-rag-chunk">
+                              <div className="psp-rag-header">
+                                <span>📄 {c.source}{c.category ? ` / ${c.category}` : ''}</span>
+                                <span className="psp-rag-score" style={{ color }}>유사도 {c.score}%</span>
+                              </div>
+                              <div className="psp-rag-preview">{c.preview}{c.preview.length >= 80 ? '…' : ''}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {ragChunks && ragChunks.length === 0 && (
+                        <div className="psp-rag-empty">관련 청크 없음 (유사도 0.3 미만)</div>
+                      )}
+
+                      {/* Generic data for other steps */}
+                      {!arch && !ragChunks && s.data && (
+                        <div className="psp-generic-data">
+                          {Object.entries(s.data).map(([k, v]) => (
+                            typeof v !== 'object' ? (
+                              <div key={k} className="psp-data-row">
+                                <span>{k}</span><strong>{String(v)}</strong>
+                              </div>
+                            ) : null
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -121,6 +270,12 @@ export default function Page() {
         break;
       case 'reflection':
         setMessages(p => p.map(m => m.id === aid ? { ...m, reflection: data as unknown as Reflection } : m));
+        break;
+      case 'process_trace':
+        setMessages(p => p.map(m => m.id === aid
+          ? { ...m, processTrace: (data as { steps: ProcessTraceStep[] }).steps }
+          : m
+        ));
         break;
       case 'done':
         setMessages(p => p.map(m => m.id === aid ? { ...m, latency: data.latency as string, modelUsed: data.provider as string } : m));
@@ -312,6 +467,12 @@ export default function Page() {
           </button>
 
           <div className="sidebar-label" style={{marginTop:16}}>개발자 도구</div>
+          <Link href="/knowledge" style={{textDecoration:'none'}}>
+            <button className="quick-btn" id="sidebar-kb-btn" style={{width:'100%', textAlign:'left'}}>
+              <span className="q-icon">🗂️</span>
+              지식 베이스 탐색
+            </button>
+          </Link>
           <Link href="/lab" style={{textDecoration:'none'}}>
             <button className="quick-btn" id="sidebar-lab-btn" style={{width:'100%', textAlign:'left'}}>
               <span className="q-icon">🧪</span>
@@ -409,6 +570,11 @@ export default function Page() {
                           💡 사고 과정 상세
                         </button>
                       ) : null
+                    )}
+
+                    {/* ─── 처리 시퀀스 패널 ─── */}
+                    {msg.role === 'assistant' && msg.processTrace && msg.processTrace.length > 0 && (
+                      <ProcessSequencePanel steps={msg.processTrace} msgId={msg.id} />
                     )}
 
                     <div className="msg-time">

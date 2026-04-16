@@ -57,6 +57,9 @@ router.post('/chat', async (req: Request, res: Response) => {
       case 'reflection':
         events.push({ event: 'reflection', data: event.reflection });
         break;
+      case 'process_trace':
+        events.push({ event: 'process_trace', data: { steps: event.processTrace } });
+        break;
       case 'done':
         events.push({ event: 'done', data: { latency: event.content, provider: llmClient.getLastUsedProvider() } });
         break;

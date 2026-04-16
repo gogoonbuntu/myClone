@@ -11,7 +11,7 @@ export const config = {
     model: process.env.LLM_MODEL || 'llama-3.3-70b-versatile',
     googleApiKey: process.env.GOOGLE_API_KEY || '',
     groqApiKey: process.env.GROQ_API_KEY || '',
-    embeddingModel: process.env.EMBEDDING_MODEL || 'text-embedding-004',
+    embeddingModel: process.env.EMBEDDING_MODEL || 'gemini-embedding-004',
   },
 
   chroma: {

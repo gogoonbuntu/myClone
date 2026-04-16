@@ -43,7 +43,8 @@ function cosineSimilarity(a: number[], b: number[]): number {
 
 // ─── Local File Vector Store (no Docker needed) ──────────────────────────────
 
-const DATA_DIR = path.join(process.cwd(), 'data');
+// Always store data at project-root/data/ (2 levels up from src/rag/)
+const DATA_DIR = path.resolve(__dirname, '..', '..', '..', 'data');
 const VECTORS_FILE = path.join(DATA_DIR, 'vectors.json');
 
 class VectorStore {

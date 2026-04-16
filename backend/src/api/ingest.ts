@@ -219,6 +219,65 @@ router.get('/ingest/stats', async (_req: Request, res: Response) => {
   res.json(stats);
 });
 
+// ── GET /api/knowledge — List all stored sources with chunks ──────────────────
+
+router.get('/knowledge', async (_req: Request, res: Response) => {
+  await vectorStore.init();
+  const vectors = vectorStore.getAllVectors();
+
+  // Group by source
+  const sourceMap = new Map<string, {
+    source: string;
+    sourceType: string;
+    timestamp: string;
+    chunks: Array<{ id: string; content: string; tokenCount?: number; chunkIndex?: number }>;
+  }>();
+
+  for (const v of vectors) {
+    const src = (v.metadata.source as string) || 'unknown';
+    if (!sourceMap.has(src)) {
+      sourceMap.set(src, {
+        source: src,
+        sourceType: (v.metadata.sourceType as string) || 'note',
+        timestamp: (v.metadata.timestamp as string) || '',
+        chunks: [],
+      });
+    }
+    sourceMap.get(src)!.chunks.push({
+      id: v.id,
+      content: v.content,
+      tokenCount: v.metadata.tokenCount as number | undefined,
+      chunkIndex: v.metadata.chunkIndex as number | undefined,
+    });
+  }
+
+  const sources = Array.from(sourceMap.values()).sort((a, b) =>
+    b.timestamp.localeCompare(a.timestamp)
+  );
+
+  res.json({
+    totalVectors: vectors.length,
+    totalSources: sources.length,
+    sources,
+  });
+});
+
+// ── DELETE /api/knowledge/:source — Delete all chunks for a source ────────────
+
+router.delete('/knowledge/:source', async (req: Request, res: Response) => {
+  const source = decodeURIComponent(String(req.params.source));
+  await vectorStore.init();
+  const before = await vectorStore.getStats();
+  await vectorStore.deleteBySource(source);
+  const after = await vectorStore.getStats();
+  res.json({
+    success: true,
+    source,
+    deleted: before.count - after.count,
+    remaining: after.count,
+  });
+});
+
 // ── Analysis steps builder ────────────────────────────────────────────────────
 
 function buildAnalysisSteps(content: string, chunkCount: number) {
