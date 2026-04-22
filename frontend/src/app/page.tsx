@@ -27,6 +27,14 @@ interface Message {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
+const PLACEHOLDERS = [
+  '무엇이든 물어보세요…',
+  '내 프로젝트에 대해 질문해보세요…',
+  '기술적 결정 이유를 묻고 싶으시면…',
+  '내 개발 철학과 체계를 말해보세요…',
+  '경험에서 배운 교훈을 알려주세요…',
+];
+
 const SUGGESTIONS = [
   { icon: '🚀', text: '내 프로젝트 중 가장 복잡했던 것과 해결 방법을 알려줘' },
   { icon: '🧠', text: '새로운 기술을 배울 때 내가 쓰는 접근 방식은 뭐야?' },
@@ -50,6 +58,129 @@ function md(text: string): string {
     .replace(/^[-*] (.+)$/gm, '<li>$1</li>')
     .replace(/(<li>[^<]*<\/li>[\n]?)+/g, '<ul>$&</ul>')
     .replace(/\n\n+/g, '</p><p>');
+}
+
+// ─── Source category helpers ────────────────────────────────────────────────
+
+const CATEGORY_COLORS: Record<string, string> = {
+  project:    '#6366f1',
+  experience: '#22d3ee',
+  note:       '#34d399',
+  blog:       '#fbbf24',
+  github:     '#a78bfa',
+  url:        '#f472b6',
+  text:       '#818cf8',
+};
+const CATEGORY_ICONS: Record<string, string> = {
+  project:    '🚀',
+  experience: '💼',
+  note:       '📝',
+  blog:       '✍️',
+  github:     '🐙',
+  url:        '🌐',
+  text:       '📋',
+};
+function catColor(cat?: string | null): string {
+  return CATEGORY_COLORS[(cat ?? '').toLowerCase()] ?? '#818cf8';
+}
+function catIcon(cat?: string | null): string {
+  return CATEGORY_ICONS[(cat ?? '').toLowerCase()] ?? '📄';
+}
+function scoreLabel(s: number): { label: string; color: string } {
+  if (s >= 0.85) return { label: '매우 높음', color: '#34d399' };
+  if (s >= 0.70) return { label: '높음',     color: '#6366f1' };
+  if (s >= 0.55) return { label: '보통',     color: '#fbbf24' };
+  return                { label: '낮음',     color: '#9490b8' };
+}
+
+// ─── Inline Sources Panel ────────────────────────────────────────────────────
+
+function SourcesPanel({ sources }: { sources: Source[] }) {
+  const [open, setOpen] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const topScore = Math.max(...sources.map(s => s.score));
+
+  return (
+    <div className="src-panel">
+      <button className="src-toggle" onClick={() => setOpen(o => !o)}>
+        <span className="src-toggle-icon">📚</span>
+        <span>참고한 지식 {sources.length}개</span>
+        <div className="src-score-pills">
+          {sources.slice(0, 3).map(s => {
+            const { color } = scoreLabel(s.score);
+            return (
+              <span key={s.id} className="src-mini-pill" style={{ background: `${color}22`, borderColor: `${color}44`, color }}>
+                {catIcon(s.category)} {(s.score * 100).toFixed(0)}%
+              </span>
+            );
+          })}
+          {sources.length > 3 && <span className="src-mini-pill src-more">+{sources.length - 3}</span>}
+        </div>
+        <span className="src-caret">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="src-body">
+          {/* Relevance bar chart */}
+          <div className="src-bar-chart">
+            {sources.map((s, i) => {
+              const pct = topScore > 0 ? (s.score / topScore) * 100 : 0;
+              const { color } = scoreLabel(s.score);
+              const name = s.source.length > 18 ? s.source.slice(0, 18) + '…' : s.source;
+              return (
+                <div key={s.id} className="src-bar-row" style={{ animationDelay: `${i * 60}ms` }}>
+                  <div className="src-bar-label">
+                    <span className="src-bar-cat-icon">{catIcon(s.category)}</span>
+                    <span className="src-bar-name">{name}</span>
+                  </div>
+                  <div className="src-bar-track">
+                    <div className="src-bar-fill" style={{ width: `${pct}%`, background: `linear-gradient(90deg, ${color}aa, ${color})` }} />
+                    <span className="src-bar-pct" style={{ color }}>{(s.score * 100).toFixed(0)}%</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Source cards */}
+          <div className="src-cards">
+            {sources.map(s => {
+              const { label, color } = scoreLabel(s.score);
+              const isExp = expanded === s.id;
+              const cc = catColor(s.category);
+              return (
+                <div key={s.id} className="src-card" style={{ borderColor: `${cc}25` }}>
+                  <div className="src-card-head" onClick={() => setExpanded(isExp ? null : s.id)}>
+                    <div className="src-card-icon" style={{ background: `${cc}18`, color: cc }}>
+                      {catIcon(s.category)}
+                    </div>
+                    <div className="src-card-meta">
+                      <div className="src-card-name">{s.source}</div>
+                      {s.category && (
+                        <span className="src-card-cat" style={{ background: `${cc}18`, color: cc }}>{s.category}</span>
+                      )}
+                    </div>
+                    <div className="src-card-score-wrap">
+                      <div className="src-card-score" style={{ color }}>
+                        {(s.score * 100).toFixed(0)}%
+                      </div>
+                      <div className="src-card-score-label" style={{ color }}>{label}</div>
+                    </div>
+                    <span className="src-card-caret">{isExp ? '▲' : '▼'}</span>
+                  </div>
+                  {isExp && (
+                    <div className="src-card-content">
+                      <div className="src-card-content-inner">{s.content}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Process Sequence Panel ───────────────────────────────────────────────────
@@ -211,6 +342,12 @@ export default function Page() {
   const [serverInfo, setServerInfo]       = useState<{persona:string;llm:string;provider:string}|null>(null);
   const [thinkingMsg, setThinkingMsg]     = useState<Message|null>(null);
 
+  // ─ New UX states ────────────────────────────────────────────────────────────────
+  const [placeholderIdx, setPlaceholderIdx] = useState(0);
+  const [copiedId, setCopiedId]             = useState<string|null>(null);
+  const [toast, setToast]                   = useState<{msg:string;type:'ok'|'err'}|null>(null);
+  const [lastSentText, setLastSentText]     = useState('');
+
   // Upload state
   const [isDragging, setIsDragging]       = useState(false);
   const [uploadStatus, setUploadStatus]   = useState<string|null>(null);
@@ -226,6 +363,26 @@ export default function Page() {
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, status]);
   useEffect(() => { loadStats(); }, []);
+  // Rotating placeholder
+  useEffect(() => {
+    const t = setInterval(() => setPlaceholderIdx(i => (i + 1) % PLACEHOLDERS.length), 3500);
+    return () => clearInterval(t);
+  }, []);
+  // Keyboard shortcuts: Escape 싹기, ⌘K 포커스
+  useEffect(() => {
+    const h = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { setShowModal(false); setThinkingMsg(null); }
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); textareaRef.current?.focus(); }
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, []);
+  // Auto-dismiss toast
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2500);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const loadStats = async () => {
     try {
@@ -291,6 +448,7 @@ export default function Page() {
   const send = useCallback(async (text?: string) => {
     const t = (text ?? input).trim();
     if (!t || loading) return;
+    setLastSentText(t);
 
     setInput('');
     if (textareaRef.current) textareaRef.current.style.height = 'auto';
@@ -381,6 +539,26 @@ export default function Page() {
     setMessages([]); setConvId(null); setStatus(null);
   };
 
+  // ── Utility: copy + retry ────────────────────────────────────────────────
+
+  const copyText = (text: string, id: string) => {
+    navigator.clipboard.writeText(text)
+      .then(() => {
+        setCopiedId(id);
+        setToast({ msg: '클립보드에 복사되었습니다', type: 'ok' });
+        setTimeout(() => setCopiedId(null), 2000);
+      })
+      .catch(() => setToast({ msg: '복사 실패', type: 'err' }));
+  };
+
+  const handleRetry = () => {
+    setMessages(p => {
+      const last = p[p.length - 1];
+      return last?.role === 'assistant' ? p.slice(0, -1) : p;
+    });
+    if (lastSentText) send(lastSentText);
+  };
+
   // ── Upload helpers ─────────────────────────────────────────────────────────
 
   const doUploadFile = async (file: File) => {
@@ -452,6 +630,17 @@ export default function Page() {
         </div>
 
         <div className="sidebar-body">
+          {/* 온보딩 카드 — 지식 0개일 때 */}
+          {vecCount === 0 && (
+            <div className="onboard-card">
+              <div className="onboard-card-title">🎯 시작하기</div>
+              <div className="onboard-step onboard-done">✅ AI 에이전트 실행 중</div>
+              <button className="onboard-step onboard-todo" onClick={() => setShowModal(true)}>
+                📁 첫 지식 추가하기 →
+              </button>
+            </div>
+          )}
+
           <div className="sidebar-label">빠른 질문</div>
           {SUGGESTIONS.map((s, i) => (
             <button key={i} id={`q-${i}`} className="quick-btn" onClick={() => send(s.text)}>
@@ -460,7 +649,10 @@ export default function Page() {
             </button>
           ))}
 
-          <div className="sidebar-label" style={{marginTop:16}}>지식 베이스</div>
+          <div className="sidebar-label" style={{marginTop:16}}>
+            지식 베이스
+            {vecCount > 0 && <span className="sidebar-vec-badge">{vecCount.toLocaleString()}</span>}
+          </div>
           <button className="quick-btn" onClick={() => setShowModal(true)} id="sidebar-upload-btn">
             <span className="q-icon">📁</span>
             지식 추가하기
@@ -518,9 +710,41 @@ export default function Page() {
                 <div className="welcome-logo">🧠</div>
                 <div className="welcome-title">나의 AI에 오신 것을 환영합니다</div>
                 <p className="welcome-desc">
-                  내 과거 경험, 기술 스택, 프로젝트, 메모를 학습하고<br/>
+                  내 경험, 기술 스택, 프로젝트를 학습하고<br/>
                   마치 내가 직접 답하듯 추론하는 개인 AI 에이전트입니다.
                 </p>
+
+                {/* Feature pills */}
+                <div className="welcome-features">
+                  <div className="welcome-feat">
+                    <span className="welcome-feat-icon">🔍</span>
+                    <div className="welcome-feat-name">RAG 검색</div>
+                    <div className="welcome-feat-desc">벡터 유사도 기반 지식 검색</div>
+                  </div>
+                  <div className="welcome-feat">
+                    <span className="welcome-feat-icon">🪿</span>
+                    <div className="welcome-feat-name">Self-Reflection</div>
+                    <div className="welcome-feat-desc">답변을 스스로 비판하고 개선</div>
+                  </div>
+                  <div className="welcome-feat">
+                    <span className="welcome-feat-icon">⚡</span>
+                    <div className="welcome-feat-name">멀티 모델</div>
+                    <div className="welcome-feat-desc">Groq + Gemini 자동 페일오버</div>
+                  </div>
+                </div>
+
+                {/* Onboarding banner when no knowledge */}
+                {vecCount === 0 && (
+                  <div className="welcome-onboard">
+                    <div className="welcome-onboard-icon">💡</div>
+                    <div>
+                      <strong>첫 번째 지식을 추가해보세요</strong>
+                      <p>지식 베이스가 비어있으면 AI가 일반적인 답변만 할 수 있어요.<br/>파일·URL·텍스트를 추가하면 내 경험 기반으로 답할 수 있습니다.</p>
+                      <button className="onboard-add-btn" onClick={() => setShowModal(true)}>📁 지식 추가하기 →</button>
+                    </div>
+                  </div>
+                )}
+
                 <div className="chips">
                   {SUGGESTIONS.map((s, i) => (
                     <button key={i} id={`chip-${i}`} className="chip" onClick={() => send(s.text)}>
@@ -543,14 +767,31 @@ export default function Page() {
                         </div>
                       </div>
                     ) : (
-                      <div
-                        className="bubble"
-                        dangerouslySetInnerHTML={{ __html:
-                          msg.role === 'assistant'
-                            ? `<p>${md(msg.content)}</p>`
-                            : msg.content
-                        }}
-                      />
+                      <div className="bubble-wrap">
+                        <div
+                          className="bubble"
+                          dangerouslySetInnerHTML={{ __html:
+                            msg.role === 'assistant'
+                              ? `<p>${md(msg.content)}</p>`
+                              : msg.content
+                          }}
+                        />
+                        {/* Copy button */}
+                        {msg.role === 'assistant' && msg.content && !msg.content.startsWith('❌') && (
+                          <button
+                            className={`copy-btn${copiedId === msg.id ? ' copied' : ''}`}
+                            onClick={() => copyText(msg.content, msg.id)}
+                            title="복사"
+                          >
+                            {copiedId === msg.id ? '✅' : '📋'}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* ─── Inline sources (knowledge references) ─── */}
+                    {msg.role === 'assistant' && msg.sources && msg.sources.length > 0 && (
+                      <SourcesPanel sources={msg.sources} />
                     )}
 
                     {/* Reflection badge (improved indicator) */}
@@ -562,7 +803,7 @@ export default function Page() {
 
                     {/* 사고 과정 상세 버튼 */}
                     {msg.role === 'assistant' && msg.latency && (
-                      (msg.sources?.length || msg.tools?.length || msg.reflection || msg.originalText) ? (
+                      (msg.tools?.length || msg.reflection || msg.originalText) ? (
                         <button
                           className="thinking-open-btn"
                           onClick={() => setThinkingMsg(msg)}
@@ -577,10 +818,20 @@ export default function Page() {
                       <ProcessSequencePanel steps={msg.processTrace} msgId={msg.id} />
                     )}
 
-                    <div className="msg-time">
-                      {msg.timestamp.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'})}
-                      {msg.latency && ` · ${msg.latency}`}
-                    </div>
+                      {/* Error retry */}
+                      {msg.role === 'assistant' && msg.content.startsWith('❌') && (
+                        <button className="retry-btn" onClick={handleRetry}>
+                          🔄 다시 시도
+                        </button>
+                      )}
+
+                      <div className="msg-time">
+                        {msg.timestamp.toLocaleTimeString('ko-KR', {hour:'2-digit',minute:'2-digit'})}
+                        {msg.latency && ` · ${msg.latency}`}
+                        {msg.modelUsed && (
+                          <span className="model-badge">{msg.modelUsed.split('/')[0].toUpperCase()}</span>
+                        )}
+                      </div>
                   </div>
                 </div>
               ))
@@ -613,7 +864,7 @@ export default function Page() {
                 ref={textareaRef}
                 id="chat-input"
                 className="chat-textarea"
-                placeholder="무엇이든 물어보세요… (Enter: 전송, Shift+Enter: 줄바꿈)"
+                placeholder={loading ? '응답 생성 중…' : PLACEHOLDERS[placeholderIdx]}
                 value={input}
                 rows={1}
                 disabled={loading}
@@ -627,6 +878,7 @@ export default function Page() {
                 }}
               />
               <div className="input-actions">
+                {input.length > 0 && <span className="char-count">{input.length}</span>}
                 <button className="attach-btn" onClick={() => setShowModal(true)} title="지식 추가" id="attach-btn">📎</button>
                 <button
                   id="send-btn"
@@ -639,9 +891,18 @@ export default function Page() {
                 </button>
               </div>
             </div>
-            <div className="input-hint">나의 AI · Groq + Gemini Failover · RAG 기반 개인 지식 검색</div>
+            <div className="input-hint">
+              <span>⌘K 입력창 포커스</span>
+              <span className="hint-dot">·</span>
+              <span>Enter 전송</span>
+              <span className="hint-dot">·</span>
+              <span>Shift+Enter 줄바꿈</span>
+              <span className="hint-dot">·</span>
+              <span>Esc 닫기</span>
+            </div>
           </div>
         </div>
+
       </div>
 
       {/* ─── Thinking Process Modal ─── */}
@@ -679,20 +940,63 @@ export default function Page() {
                 </div>
               )}
 
-              {/* Step 2: Referenced sources */}
+              {/* Step 2: Referenced sources — rich diagram */}
               {thinkingMsg.sources && thinkingMsg.sources.length > 0 && (
                 <div className="think-section">
-                  <div className="think-section-title">📚 참조한 지식 ({thinkingMsg.sources.length}개)</div>
-                  <div className="think-section-desc">벡터 검색으로 찾은 관련 지식입니다.</div>
-                  {thinkingMsg.sources.map(s => (
-                    <div key={s.id} className="think-source">
-                      <div className="think-source-header">
-                        <span>📄 {s.source}{s.category ? ` / ${s.category}` : ''}</span>
-                        <span className="think-score">{(s.score*100).toFixed(0)}% 관련</span>
-                      </div>
-                      <div className="think-source-content">{s.content}</div>
+                  <div className="think-section-title">📚 참조한 지식 — {thinkingMsg.sources.length}개 청크</div>
+                  <div className="think-section-desc">코사인 유사도 기반 벡터 검색 결과입니다. 클릭하면 원문을 확인할 수 있습니다.</div>
+
+                  {/* Similarity overview bar */}
+                  <div className="tsrc-overview">
+                    <div className="tsrc-overview-label">유사도 분포</div>
+                    <div className="tsrc-overview-bars">
+                      {thinkingMsg.sources.map((s, i) => {
+                        const { color } = scoreLabel(s.score);
+                        const topS = Math.max(...(thinkingMsg.sources ?? []).map(x => x.score));
+                        const pct = topS > 0 ? (s.score / topS) * 100 : 0;
+                        return (
+                          <div key={s.id} className="tsrc-overview-bar-wrap" title={`${s.source}: ${(s.score*100).toFixed(1)}%`}>
+                            <div className="tsrc-overview-bar" style={{ height: `${Math.max(10, pct)}%`, background: color }} />
+                            <div className="tsrc-overview-bar-num" style={{ color }}>{i+1}</div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  ))}
+                  </div>
+
+                  {/* Source cards */}
+                  <div className="tsrc-cards">
+                    {thinkingMsg.sources.map((s, i) => {
+                      const { label, color } = scoreLabel(s.score);
+                      const cc = catColor(s.category);
+                      return (
+                        <div key={s.id} className="tsrc-card" style={{ '--cc': cc } as React.CSSProperties}>
+                          <div className="tsrc-card-top">
+                            <div className="tsrc-card-rank" style={{ background: `${cc}22`, color: cc, borderColor: `${cc}44` }}>{i+1}</div>
+                            <div className="tsrc-card-icon" style={{ color: cc }}>{catIcon(s.category)}</div>
+                            <div className="tsrc-card-info">
+                              <div className="tsrc-card-name">{s.source}</div>
+                              {s.category && <span className="tsrc-card-cat" style={{ background: `${cc}15`, color: cc }}>{s.category}</span>}
+                            </div>
+                            <div className="tsrc-score-block">
+                              <div className="tsrc-score-num" style={{ color }}>{(s.score*100).toFixed(1)}%</div>
+                              <div className="tsrc-score-label" style={{ color }}>{label}</div>
+                            </div>
+                          </div>
+
+                          {/* Inline score bar */}
+                          <div className="tsrc-bar-track">
+                            <div className="tsrc-bar-fill" style={{ width: `${s.score*100}%`, background: `linear-gradient(90deg, ${color}55, ${color})` }} />
+                          </div>
+
+                          {/* Preview */}
+                          <div className="tsrc-preview">
+                            {s.content.slice(0, 160)}{s.content.length > 160 ? '…' : ''}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
 
@@ -839,6 +1143,13 @@ export default function Page() {
               </div>
             )}
           </div>
+        </div>
+      )}
+      {/* ─── Toast ─── */}
+      {toast && (
+        <div className={`toast toast-${toast.type}`}>
+          <span className="toast-icon">{toast.type === 'ok' ? '✅' : '⚠️'}</span>
+          {toast.msg}
         </div>
       )}
     </div>
