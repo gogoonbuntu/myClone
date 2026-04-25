@@ -235,7 +235,18 @@ function ProcessSequencePanel({ steps, msgId }: { steps: ProcessTraceStep[]; msg
               const isExpanded = expandedStep === s.id;
               const arch = s.id === 'llm_inference' ? (s.data?.architecture as Record<string, unknown> | undefined) : null;
               const ragChunks = s.id === 'rag_search' ? (s.data?.chunks as Array<{source:string;score:number;category:string|null;preview:string}> | undefined) : null;
-              const procNotes = s.id === 'llm_inference' ? (s.data?.processingNote as string[] | undefined) : null;
+              const procNotesRaw: unknown = s.id === 'llm_inference' ? s.data?.processingNote : null;
+              const procNotes: string[] | null = Array.isArray(procNotesRaw) ? (procNotesRaw as string[]) : null;
+              const renderProcNotes: React.ReactNode = procNotes && procNotes.length > 0 ? (
+                <div className="psp-layer-notes">
+                  {procNotes.map((n: string, ni: number) => (
+                    <div key={ni} className="psp-layer-note">
+                      <span className="psp-layer-dot" style={{ background: color }} />
+                      {n}
+                    </div>
+                  ))}
+                </div>
+              ) : null;
 
               return (
                 <div key={s.id} className="psp-step">
@@ -271,16 +282,7 @@ function ProcessSequencePanel({ steps, msgId }: { steps: ProcessTraceStep[]; msg
                         </div>
                       )}
                       {arch && <div className="psp-arch-note">{String(arch.note ?? '')}</div>}
-                      {procNotes && (
-                        <div className="psp-layer-notes">
-                          {procNotes.map((n, ni) => (
-                            <div key={ni} className="psp-layer-note">
-                              <span className="psp-layer-dot" style={{ background: color }} />
-                              {n}
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      {renderProcNotes}
                       {arch && s.data?.attentionNote && (
                         <div className="psp-attention-note">{String(s.data.attentionNote)}</div>
                       )}
@@ -327,6 +329,222 @@ function ProcessSequencePanel({ steps, msgId }: { steps: ProcessTraceStep[]; msg
   );
 }
 
+// ─── Educational Pipeline Animation Modal ───────────────────────────────────────
+
+const EDU_STEP_DESCRIPTIONS: Record<string, { what: string; why: string; how: string }> = {
+  tokenize:    { what: '텍스트를 토큰으로 분리합니다', why: '모델은 문자가 아닌 토큰 단위로 처리합니다', how: '공백·형태소·BPE(Byte Pair Encoding) 기반 분리' },
+  embed:       { what: '텍스트를 768차원 벡터로 변환합니다', why: '의미적 유사도를 수학적으로 비교하기 위해서입니다', how: 'Google text-embedding-004 모델이 12개 어텐션 헤드로 병렬 처리' },
+  memory:      { what: '이전 대화 기록을 불러옵니다', why: '문맥을 유지해 자연스러운 다회전 대화를 가능하게 합니다', how: 'Redis 단기 메모리에서 최근 N턴을 순서대로 로드' },
+  rag_search:  { what: '지식 베이스에서 관련 청크를 검색합니다', why: '사실에 근거한 답변을 위해 관련 지식을 먼저 찾습니다', how: '코사인 유사도 계산 → 임계값(0.3) 이상인 상위 5개 선택' },
+  prompt_build:{ what: '시스템 프롬프트와 컨텍스트를 조립합니다', why: 'LLM에게 역할·지식·맥락을 한꺼번에 전달합니다', how: '시스템 프롬프트 + RAG 청크 + 대화 히스토리 + 사용자 질문' },
+  llm_inference:{ what: 'LLM이 Transformer forward pass를 실행합니다', why: '조립된 컨텍스트를 바탕으로 최적의 다음 토큰을 예측합니다', how: '여러 레이어의 Self-Attention + FFN을 순차 처리' },
+  reflection:  { what: '생성된 답변을 스스로 비판하고 개선합니다', why: '초안의 오류·누락을 검출해 품질을 높입니다', how: '별도 LLM 호출로 critique → 개선 여부 판단 → 재생성' },
+  output:      { what: '최종 응답을 출력하고 메모리에 저장합니다', why: '다음 대화에서도 이 정보를 활용할 수 있게 합니다', how: 'Redis에 user/assistant 턴 저장, 화면에 스트리밍 출력' },
+};
+
+const EDU_DATA_LABELS: Record<string, string> = {
+  tokenize: '문자열 → 토큰 배열',
+  embed: '토큰 → 768d 벡터',
+  memory: '히스토리 Message[]',
+  rag_search: '유사 청크 목록',
+  prompt_build: '완성된 프롬프트',
+  llm_inference: '응답 토큰 스트림',
+  reflection: '개선된 응답 텍스트',
+  output: '저장 완료 ✓',
+};
+
+function EduPipelineModal({ steps, onClose }: { steps: ProcessTraceStep[]; onClose: () => void }) {
+  const [phase, setPhase]               = useState<'idle'|'playing'|'done'>('idle');
+  const [visibleCount, setVisibleCount] = useState(0);
+  const [activeIdx, setActiveIdx]       = useState(-1);
+  const [expandedIdx, setExpandedIdx]   = useState<number|null>(null);
+  const timerRef                        = useRef<ReturnType<typeof setTimeout>[]>([]);
+
+  const clearTimers = () => { timerRef.current.forEach(clearTimeout); timerRef.current = []; };
+
+  const play = () => {
+    clearTimers();
+    setPhase('playing');
+    setVisibleCount(0);
+    setActiveIdx(-1);
+    setExpandedIdx(null);
+
+    const STEP_DELAY = 1400; // ms per step
+    steps.forEach((_, i) => {
+      const t1 = setTimeout(() => setActiveIdx(i),          i * STEP_DELAY);
+      const t2 = setTimeout(() => setVisibleCount(i + 1),   i * STEP_DELAY + 200);
+      timerRef.current.push(t1, t2);
+    });
+    const tEnd = setTimeout(() => {
+      setPhase('done');
+      setActiveIdx(-1);
+    }, steps.length * STEP_DELAY + 600);
+    timerRef.current.push(tEnd);
+  };
+
+  useEffect(() => { play(); return clearTimers; }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const totalMs = steps[steps.length - 1]?.durationMs ?? 0;
+
+  return (
+    <div className="backdrop edu-backdrop" onClick={e => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="edu-modal" id="edu-pipeline-modal">
+        {/* Header */}
+        <div className="edu-modal-header">
+          <div className="edu-modal-title">
+            <span className="edu-modal-icon">🎓</span>
+            AI 파이프라인 시뮬레이션
+          </div>
+          <div className="edu-modal-meta">
+            <span className="edu-meta-tag">⏱ 총 {totalMs}ms</span>
+            <span className="edu-meta-tag">🔢 {steps.length}단계</span>
+          </div>
+          <div className="edu-modal-controls">
+            <button
+              className={`edu-play-btn${phase === 'playing' ? ' playing' : ''}`}
+              onClick={play}
+              disabled={phase === 'playing'}
+            >
+              {phase === 'playing' ? (
+                <><span className="edu-play-spin">⟳</span> 재생 중…</>
+              ) : (
+                <><span>▶</span> {phase === 'done' ? '다시 보기' : '재생'}</>
+              )}
+            </button>
+            <button className="edu-close-btn" onClick={onClose}>✕</button>
+          </div>
+        </div>
+
+        {/* Progress bar */}
+        <div className="edu-progress-track">
+          <div
+            className="edu-progress-fill"
+            style={{ width: `${(visibleCount / steps.length) * 100}%`, transition: 'width 0.4s ease' }}
+          />
+        </div>
+
+        {/* Pipeline */}
+        <div className="edu-pipeline">
+          {steps.map((step, i) => {
+            const isVisible = i < visibleCount;
+            const isActive  = i === activeIdx;
+            const isExpanded = expandedIdx === i;
+            const color  = STEP_COLORS[step.id] ?? '#6366f1';
+            const icon   = STEP_ICONS[step.id] ?? '🔹';
+            const desc   = EDU_STEP_DESCRIPTIONS[step.id];
+            const dataLabel = EDU_DATA_LABELS[step.id];
+            const pct    = totalMs > 0 ? (step.durationMs ?? 0) / totalMs * 100 : 0;
+
+            return (
+              <div key={step.id} className="edu-row">
+                {/* Step card */}
+                <div
+                  className={`edu-card${isVisible ? ' edu-visible' : ''}${isActive ? ' edu-active' : ''}`}
+                  style={{ '--step-color': color } as React.CSSProperties}
+                  onClick={() => setExpandedIdx(isExpanded ? null : i)}
+                >
+                  <div className="edu-card-left">
+                    <div className="edu-step-dot" style={{ background: color, boxShadow: isActive ? `0 0 14px ${color}88` : 'none' }}>
+                      {isVisible ? <span>{icon}</span> : <span className="edu-dot-wait">…</span>}
+                    </div>
+                    <div className="edu-card-info">
+                      <div className="edu-card-num" style={{ color }}>STEP {i + 1}</div>
+                      <div className="edu-card-label">{step.label}</div>
+                      {isVisible && (
+                        <div className="edu-card-detail">{step.detail}</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="edu-card-right">
+                    {isVisible && (
+                      <>
+                        <div className="edu-timing">
+                          <div className="edu-timing-bar-track">
+                            <div
+                              className="edu-timing-bar-fill"
+                              style={{
+                                width: `${Math.max(4, pct)}%`,
+                                background: color,
+                                animationDuration: `${(step.durationMs ?? 300) / 1000 + 0.3}s`,
+                              }}
+                            />
+                          </div>
+                          <span className="edu-timing-ms" style={{ color }}>
+                            {step.durationMs != null ? `${step.durationMs}ms` : '—'}
+                          </span>
+                        </div>
+                        <div className="edu-expand-caret">{isExpanded ? '▲' : '▼'}</div>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Expanded detail */}
+                {isVisible && isExpanded && desc && (
+                  <div className="edu-expanded">
+                    <div className="edu-exp-grid">
+                      <div className="edu-exp-item">
+                        <div className="edu-exp-title">📌 무엇을 하나요?</div>
+                        <div className="edu-exp-body">{desc.what}</div>
+                      </div>
+                      <div className="edu-exp-item">
+                        <div className="edu-exp-title">💡 왜 필요한가요?</div>
+                        <div className="edu-exp-body">{desc.why}</div>
+                      </div>
+                      <div className="edu-exp-item edu-exp-full">
+                        <div className="edu-exp-title">⚙️ 어떻게 작동하나요?</div>
+                        <div className="edu-exp-body">{desc.how}</div>
+                      </div>
+                    </div>
+                    {/* Raw data from trace */}
+                    {step.data && (
+                      <div className="edu-raw-data">
+                        {Object.entries(step.data)
+                          .filter(([, v]) => typeof v !== 'object' || v === null)
+                          .slice(0, 6)
+                          .map(([k, v]) => (
+                            <div key={k} className="edu-raw-row">
+                              <span className="edu-raw-key">{k}</span>
+                              <span className="edu-raw-val">{String(v)}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Arrow connector */}
+                {i < steps.length - 1 && (
+                  <div className={`edu-connector-wrap${isVisible ? ' edu-conn-visible' : ''}`}>
+                    <div className="edu-connector-line" style={{ borderColor: color }} />
+                    {isVisible && dataLabel && (
+                      <div className="edu-data-chip" style={{ background: `${color}18`, borderColor: `${color}40`, color }}>
+                        {dataLabel}
+                        <span className="edu-arrow-chip">→</span>
+                      </div>
+                    )}
+                    <div className={`edu-particle${isActive || (visibleCount > i && visibleCount <= i + 1) ? ' flowing' : ''}`}
+                      style={{ background: color }} />
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Done badge */}
+          {phase === 'done' && (
+            <div className="edu-done-badge">
+              <span>🎉</span> 파이프라인 완료
+              <span className="edu-done-time">총 {totalMs}ms</span>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function Page() {
@@ -341,6 +559,7 @@ export default function Page() {
   const [expanded, setExpanded]           = useState<Set<string>>(new Set());
   const [serverInfo, setServerInfo]       = useState<{persona:string;llm:string;provider:string}|null>(null);
   const [thinkingMsg, setThinkingMsg]     = useState<Message|null>(null);
+  const [eduFlowMsg, setEduFlowMsg]       = useState<Message|null>(null);
 
   // ─ New UX states ────────────────────────────────────────────────────────────────
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
@@ -371,7 +590,7 @@ export default function Page() {
   // Keyboard shortcuts: Escape 싹기, ⌘K 포커스
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { setShowModal(false); setThinkingMsg(null); }
+      if (e.key === 'Escape') { setShowModal(false); setThinkingMsg(null); setEduFlowMsg(null); }
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); textareaRef.current?.focus(); }
     };
     window.addEventListener('keydown', h);
@@ -406,6 +625,7 @@ export default function Page() {
       case 'init':    if (data.conversationId) setConvId(data.conversationId as string); break;
       case 'status':  setStatus(data.message as string); break;
       case 'text':
+        setStatus(null); // 첫 텍스트가 오면 상태 메시지 제거
         setMessages(p => p.map(m => m.id === aid ? { ...m, content: m.content + (data.delta as string) } : m));
         break;
       case 'original_text':
@@ -460,6 +680,9 @@ export default function Page() {
     setMessages(p => [...p, userMsg, aMsg]);
     setLoading(true); setStatus('응답 생성 중...');
 
+    // 스트리밍 중 커서 표시 상태
+    let isStreaming = true;
+
     try {
       const res = await fetch(`${API_URL}/api/chat`, {
         method: 'POST',
@@ -467,59 +690,55 @@ export default function Page() {
         body: JSON.stringify({ message: t, conversationId: convId, useReflection: true }),
       });
       if (!res.ok) throw new Error(`API ${res.status}`);
+      if (!res.body) throw new Error('ReadableStream not supported');
 
-      const body = await res.text();
-      const lines = body.trim().split('\n');
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      // replace_text 이벤트가 오면 전체 content를 교체
+      let pendingReplaceText: string | null = null;
 
-      // Parse all NDJSON events
-      const events: Array<{ event: string; data: Record<string,unknown> }> = [];
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try { events.push(JSON.parse(line)); } catch { /**/ }
-      }
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      console.log('[CHAT] Parsed events:', events.map(e => e.event));
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? ''; // 마지막 불완전 줄 보존
 
-      // Separate text deltas (for typewriter) from other events (instant)
-      let fullText = '';
-      let replacementText: string | null = null;
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let parsed: { event: string; data: Record<string, unknown> };
+          try { parsed = JSON.parse(line); } catch { continue; }
+          const { event, data } = parsed;
 
-      for (const { event, data } of events) {
-        if (event === 'text') {
-          fullText += (data.delta as string) || '';
-        } else if (event === 'replace_text') {
-          // Only accept non-empty string replacements
-          const rt = data.content;
-          if (typeof rt === 'string' && rt.length > 0) {
-            replacementText = rt;
+          if (event === 'text') {
+            // 텍스트 청크 즉시 append — 진짜 스트리밍
+            const delta = (data.delta as string) || '';
+            setMessages(p => p.map(m =>
+              m.id === aid ? { ...m, content: m.content + delta } : m
+            ));
+          } else if (event === 'original_text') {
+            const ot = data.content;
+            if (typeof ot === 'string' && ot.length > 0) {
+              setMessages(p => p.map(m => m.id === aid ? { ...m, originalText: ot } : m));
+            }
+          } else if (event === 'replace_text') {
+            const rt = data.content;
+            if (typeof rt === 'string' && rt.length > 0) {
+              pendingReplaceText = rt;
+            }
+          } else {
+            handleEvent(event, data, aid);
           }
-        } else if (event === 'original_text') {
-          // Store original text directly - don't go through handleEvent
-          const ot = data.content;
-          if (typeof ot === 'string' && ot.length > 0) {
-            setMessages(p => p.map(m => m.id === aid ? { ...m, originalText: ot } : m));
-          }
-        } else {
-          // Apply non-text events immediately
-          handleEvent(event, data, aid);
         }
       }
 
-      console.log('[CHAT] fullText length:', fullText.length, '| replacementText:', replacementText ? replacementText.length : 'null');
-
-      // Typewriter animation for the text
-      const textToType = (replacementText && replacementText.length > 0) ? replacementText : fullText;
-      if (textToType && textToType.length > 0) {
-        const CHARS_PER_TICK = 3;
-        const TICK_MS = 10;
-
-        for (let i = 0; i < textToType.length; i += CHARS_PER_TICK) {
-          const chunk = textToType.slice(0, i + CHARS_PER_TICK);
-          setMessages(p => p.map(m => m.id === aid ? { ...m, content: chunk } : m));
-          await new Promise(r => setTimeout(r, TICK_MS));
-        }
-        // Ensure final text is set completely
-        setMessages(p => p.map(m => m.id === aid ? { ...m, content: textToType } : m));
+      // 스트림 종료 후 replace_text 처리
+      if (pendingReplaceText) {
+        setMessages(p => p.map(m =>
+          m.id === aid ? { ...m, content: pendingReplaceText! } : m
+        ));
       }
 
     } catch (err) {
@@ -528,8 +747,16 @@ export default function Page() {
         : m
       ));
     } finally {
+      isStreaming = false;
+      // 커서 제거: 스트리밍 완료 시 마지막 content에서 ▌ 제거 (혹시 남아있는 경우)
+      setMessages(p => p.map(m =>
+        m.id === aid ? { ...m, content: m.content.replace(/▌$/, '') } : m
+      ));
       setLoading(false); setStatus(null); loadStats();
     }
+
+    // isStreaming 참조를 위한 누락 방지 (ESLint)
+    void isStreaming;
   }, [input, loading, convId, handleEvent]);
 
   // ── Clear conversation ─────────────────────────────────────────────────────
@@ -755,7 +982,11 @@ export default function Page() {
                 </div>
               </div>
             ) : (
-              messages.map(msg => (
+              messages.map((msg, msgIdx) => {
+                // 마지막 assistant 메시지이고 스트리밍 중이면 커서 표시
+                const isStreamingMsg = loading && msg.role === 'assistant'
+                  && msgIdx === messages.length - 1 && msg.content.length > 0;
+                return (
                 <div key={msg.id} className={`msg ${msg.role}`}>
                   <div className="avatar">{msg.role === 'user' ? '👤' : '🧠'}</div>
                   <div className="msg-body">
@@ -769,7 +1000,7 @@ export default function Page() {
                     ) : (
                       <div className="bubble-wrap">
                         <div
-                          className="bubble"
+                          className={`bubble${isStreamingMsg ? ' streaming' : ''}`}
                           dangerouslySetInnerHTML={{ __html:
                             msg.role === 'assistant'
                               ? `<p>${md(msg.content)}</p>`
@@ -815,7 +1046,16 @@ export default function Page() {
 
                     {/* ─── 처리 시퀀스 패널 ─── */}
                     {msg.role === 'assistant' && msg.processTrace && msg.processTrace.length > 0 && (
-                      <ProcessSequencePanel steps={msg.processTrace} msgId={msg.id} />
+                      <div>
+                        <ProcessSequencePanel steps={msg.processTrace} msgId={msg.id} />
+                        <button
+                          className="edu-trigger-btn"
+                          onClick={() => setEduFlowMsg(msg)}
+                          title="교육적 파이프라인 시뮬레이션 보기"
+                        >
+                          🎓 파이프라인 시뮬레이션
+                        </button>
+                      </div>
                     )}
 
                       {/* Error retry */}
@@ -834,7 +1074,8 @@ export default function Page() {
                       </div>
                   </div>
                 </div>
-              ))
+                );
+              })
             )}
 
             {/* Status pill */}
@@ -1145,6 +1386,14 @@ export default function Page() {
           </div>
         </div>
       )}
+      {/* ─── Edu Pipeline Modal ─── */}
+      {eduFlowMsg && eduFlowMsg.processTrace && (
+        <EduPipelineModal
+          steps={eduFlowMsg.processTrace}
+          onClose={() => setEduFlowMsg(null)}
+        />
+      )}
+
       {/* ─── Toast ─── */}
       {toast && (
         <div className={`toast toast-${toast.type}`}>
